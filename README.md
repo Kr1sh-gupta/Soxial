@@ -7,13 +7,20 @@ By Hossain Jahed
 
 ---
 
-## Try it
+## Download
 
-**Download the desktop app** from [GitHub Releases](../../releases) — installers for Linux, macOS, and Windows.
+| Platform | Download | Size | Instructions |
+|----------|----------|------|--------------|
+| **Linux** (AppImage) | [Soxial-0.1.0.AppImage](https://github.com/rabden/Soxial/releases/download/v0.1.0/Soxial-0.1.0.AppImage) | ~187 MB | `chmod +x Soxial-0.1.0.AppImage && ./Soxial-0.1.0.AppImage` |
+| **Linux** (deb) | [soxial_0.1.0_amd64.deb](https://github.com/rabden/Soxial/releases/download/v0.1.0/soxial_0.1.0_amd64.deb) | ~143 MB | `sudo dpkg -i soxial_0.1.0_amd64.deb` |
+| **macOS** (Apple Silicon) | [Soxial-0.1.0-arm64.dmg](https://github.com/rabden/Soxial/releases/download/v0.1.0/Soxial-0.1.0-arm64.dmg) | ~180 MB | Open dmg → drag to Applications. First launch: right-click → Open (unsigned) |
+| **Windows** | [Soxial.Setup.0.1.0.exe](https://github.com/rabden/Soxial/releases/download/v0.1.0/Soxial.Setup.0.1.0.exe) | ~147 MB | Run installer. SmartScreen warning → "More info" → "Run anyway" |
 
 > **Loom walkthrough** (added before submission): _link here_
 
-To run from source:
+**Why the security warnings?** The app is unsigned (no $99/yr Apple Developer cert or Windows code signing cert). The binaries are built via GitHub Actions CI from the source in this repo — you can verify the build yourself. macOS: right-click → Open to bypass Gatekeeper. Windows: click "More info" → "Run anyway" to bypass SmartScreen.
+
+To run from source instead:
 
 ```bash
 npm install
