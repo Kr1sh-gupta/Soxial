@@ -1,0 +1,473 @@
+import { useState, useEffect } from 'react'
+import { cn } from 'src/lib/utils'
+import { Loader2, Link2, FileText } from 'lucide-react'
+
+export interface PostAttachment {
+  type?: 'image' | 'gif' | 'video' | 'link'
+  url?: string
+  mediaId?: string
+  alt?: string
+  title?: string
+  description?: string
+  image?: string
+}
+
+function decodeUrl(url?: string): string {
+  return url?.replace(/&amp;/g, '&') || ''
+}
+
+function firstString(...values: unknown[]): string {
+  return values.find((value): value is string => typeof value === 'string' && value.length > 0) || ''
+}
+
+function isImageUrl(url: string): boolean {
+  return /\.(jpg|jpeg|png|gif|webp)(\?|$)/i.test(url)
+}
+
+function isVideoUrl(url: string): boolean {
+  return /\.(mp4|webm|mov)(\?|$)/i.test(url)
+}
+
+function uniqByUrl(atts: PostAttachment[]): PostAttachment[] {
+  const seen = new Set<string>()
+  return atts.filter((att) => {
+    const key = att.mediaId || att.url
+    if (!key) return true
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
+}
+
+function LocalMedia({ mediaId, alt, fill }: { mediaId: string; alt?: string; fill?: boolean }) {
+  const [src, setSrc] = useState<string | null>(null)
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    const filename = mediaId.split('/').pop()
+    if (!filename) { setLoading(false); return }
+    window.api.getMedia(filename).then(r => {
+      if (r.success && r.data) setSrc(`data:${r.mime || 'image/png'};base64,${r.data}`)
+      setLoading(false)
+    })
+  }, [mediaId])
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center min-h-[120px]">
+        <Loader2 className="size-5 animate-spin text-muted-foreground" />
+      </div>
+    )
+  }
+  if (!src) return null
+  return <img src={src} alt={alt || ''} className={cn(fill ? 'size-full' : 'w-full', 'object-cover')} loading="lazy" />
+}
+
+function LinkPreview({ url, title, description, image }: { url: string; title?: string; description?: string; image?: string }) {
+  const [preview, setPreview] = useState({ title, description, image })
+  let domain = url
+  try { domain = new URL(url).hostname.replace(/^www\./, '') } catch {}
+
+  useEffect(() => {
+    let alive = true
+    if (preview.title && preview.description && preview.image) return
+    window.api.fetchLinkPreview(url).then((r) => {
+      if (!alive || !r?.success || !r?.data) return
+      setPreview((prev) => ({
+        title: prev.title || r.data.title,
+        description: prev.description || r.data.description,
+        image: prev.image || r.data.image,
+      }))
+    }).catch(() => {})
+    return () => { alive = false }
+  }, [url])
+
+  return (
+    <a
+      href={url}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="flex gap-3 rounded-xl border border-border overflow-hidden bg-muted/30 hover:bg-muted/60 transition-colors group no-underline"
+    >
+      {preview.image ? (
+        <div className="w-32 shrink-0 bg-muted overflow-hidden">
+          <img src={preview.image} alt={preview.title || ''} className="size-full object-cover" loading="lazy" />
+        </div>
+      ) : (
+        <div className="w-12 shrink-0 flex items-center justify-center bg-muted/50">
+          <FileText className="size-4 text-muted-foreground" />
+        </div>
+      )}
+      <div className="flex flex-col justify-center gap-0.5 py-2 pr-3 min-w-0 flex-1">
+        {preview.title && <span className="text-[13px] font-medium text-foreground truncate leading-tight">{preview.title}</span>}
+        {preview.description && <span className="text-[11px] text-muted-foreground line-clamp-2 leading-snug">{preview.description}</span>}
+        <span className="flex items-center gap-1 text-[11px] text-muted-foreground/70 truncate mt-0.5">
+          <Link2 className="size-2.5" />
+          {domain}
+        </span>
+      </div>
+    </a>
+  )
+}
+
+function VideoMedia({ src, type, poster, fill }: { src: string; type?: string; poster?: string; fill?: boolean }) {
+  const [failed, setFailed] = useState(false)
+
+  // ponytail: proxy twimg.com video URLs through main process (bypasses Referer 403)
+  const proxySrc = decodeUrl(src).replace(/^https:\/\/(.*\.twimg\.com\/)/, 'twimg://$1')
+
+  if (failed) {
+    return (
+      <div className="flex flex-col items-center justify-center gap-2 min-h-[120px] p-4">
+        <p className="text-xs text-muted-foreground">Video failed to load</p>
+        <a href={src} target="_blank" rel="noopener noreferrer" className="text-xs text-primary hover:underline">Open in browser</a>
+      </div>
+    )
+  }
+
+  return (
+    <video
+      src={proxySrc}
+      poster={poster ? decodeUrl(poster) : undefined}
+      className={cn(fill ? 'size-full' : 'w-full max-h-[400px]', 'object-cover')}
+      controls={type === 'video'}
+      muted
+      autoPlay={type === 'gif'}
+      loop={type === 'gif'}
+      playsInline
+      preload="auto"
+      onError={() => setFailed(true)}
+    />
+  )
+}
+
+export function PostAttachments({ attachments, className }: { attachments?: PostAttachment[]; className?: string }) {
+  if (!attachments || attachments.length === 0) return null
+
+  const media = attachments.filter(a => a.type !== 'link' && !a.title)
+  const links = attachments.filter(a => a.type === 'link' || a.title)
+
+  return (
+    <div className={cn('flex flex-col gap-2', className)}>
+      {media.length > 0 && (
+        <div className={cn(
+          'rounded-xl overflow-hidden border border-border',
+          media.length === 1 ? '' : 'grid grid-cols-2 gap-0.5'
+        )}>
+          {media.map((att, i) => {
+            const isVideo = att.type === 'video' || att.type === 'gif'
+            const fill = media.length > 1
+            return (
+              <div key={i} className={cn('bg-muted', fill ? 'aspect-square' : '')}>
+                {att.mediaId
+                  ? <LocalMedia mediaId={att.mediaId} alt={att.alt} fill={fill} />
+                  : isVideo && att.url
+                    ? <VideoMedia src={att.url} type={att.type} poster={att.image} fill={fill} />
+                    : att.url
+                      ? <img src={att.url} alt={att.alt || ''} className={cn(fill ? 'size-full' : 'w-full max-h-[400px]', 'object-cover')} loading="lazy" />
+                      : null
+                }
+              </div>
+            )
+          })}
+        </div>
+      )}
+      {links.map((att, i) => (
+        <LinkPreview key={i} url={att.url!} title={att.title} description={att.description} image={att.image} />
+      ))}
+    </div>
+  )
+}
+
+export function extractTweetAttachments(raw: any): PostAttachment[] {
+  return uniqByUrl([...extractTweetMedia(raw), ...extractTweetLinks(raw)])
+}
+
+export function extractTweetMedia(raw: any): PostAttachment[] {
+  const atts: PostAttachment[] = []
+  if (Array.isArray(raw?.media)) {
+    for (const m of raw.media) {
+      const type = m?.type === 'photo' ? 'image' : m?.type === 'animated_gif' ? 'gif' : m?.type
+      if (type === 'video' || type === 'gif') {
+        const url = getBestTweetVideoUrl(m)
+        if (url) atts.push({ type, url, alt: m?.altText || m?.alt_text, image: getTweetPosterUrl(m) || undefined })
+      } else {
+        const url = firstString(m?.mediaUrlHttps, m?.media_url_https, m?.mediaUrl, m?.media_url, m?.url)
+        if (url) atts.push({ type: 'image', url: decodeUrl(url), alt: m?.altText || m?.alt_text })
+      }
+    }
+  }
+  return atts
+}
+
+export function expandTweetLinks(text: string, raw: any): string {
+  if (!text) return text
+  const mediaUrls = getTweetMediaTcoUrls(raw)
+  const replacements = getTweetUrlEntities(raw)
+    .map((entity) => ({
+      from: firstString(entity?.url, entity?.tco, entity?.shortUrl, entity?.short_url),
+      to: getExpandedTweetUrl(entity),
+    }))
+    .filter((item) => item.from && item.to && !mediaUrls.has(item.from))
+    .sort((a, b) => b.from.length - a.from.length)
+
+  return replacements.reduce((acc, item) => acc.split(item.from).join(item.to), text)
+}
+
+function extractTweetLinks(raw: any): PostAttachment[] {
+  const mediaUrls = getTweetMediaTcoUrls(raw)
+  const card = getTweetCardPreview(raw)
+  const links = getTweetUrlEntities(raw)
+    .filter((entity) => !mediaUrls.has(firstString(entity?.url, entity?.tco, entity?.shortUrl, entity?.short_url)))
+    .map((entity): PostAttachment | null => {
+      const url = getExpandedTweetUrl(entity)
+      if (!url || /^https?:\/\/(t\.co|pic\.twitter\.com|x\.com|twitter\.com)\//i.test(url)) return null
+      return {
+        type: 'link',
+        url,
+        title: firstString(entity?.title, entity?.unwound?.title, entity?.unwoundUrl?.title, card?.title),
+        description: firstString(entity?.description, entity?.unwound?.description, entity?.unwoundUrl?.description, card?.description),
+        image: firstString(getTweetEntityImage(entity), card?.image),
+      }
+    })
+    .filter((att): att is PostAttachment => Boolean(att))
+
+  if (links.length === 0 && card?.url && !/^https?:\/\/(t\.co|pic\.twitter\.com|x\.com|twitter\.com)\//i.test(card.url)) {
+    links.push({ type: 'link', url: card.url, title: card.title, description: card.description, image: card.image })
+  }
+
+  return uniqByUrl(links)
+}
+
+function getTweetUrlEntities(raw: any): any[] {
+  const candidates = [
+    Array.isArray(raw?.urls) ? raw.urls.map((url: string) => ({ url, expanded_url: url })) : [],
+    raw?.entities?.urls,
+    raw?.entities?.url?.urls,
+    raw?.legacy?.entities?.urls,
+  ]
+  return candidates.flatMap((value) => Array.isArray(value) ? value : [])
+}
+
+function getExpandedTweetUrl(entity: any): string {
+  return decodeUrl(firstString(
+    entity?.expandedUrl,
+    entity?.expanded_url,
+    entity?.unwoundUrl?.url,
+    entity?.unwound?.url,
+    entity?.unwound_url,
+    entity?.url,
+  ))
+}
+
+function getTweetEntityImage(entity: any): string {
+  const images = entity?.images || entity?.unwound?.images || entity?.unwoundUrl?.images
+  if (Array.isArray(images)) {
+    return decodeUrl(firstString(images[0]?.url, images[0]?.image_url, images[0]?.imageUrl))
+  }
+  return decodeUrl(firstString(
+    entity?.image,
+    entity?.imageUrl,
+    entity?.image_url,
+    entity?.thumbnail,
+    entity?.thumbnailUrl,
+    entity?.thumbnail_url,
+    entity?.unwound?.image,
+    entity?.unwoundUrl?.image,
+  ))
+}
+
+function getTweetMediaTcoUrls(raw: any): Set<string> {
+  const urls = new Set<string>()
+  if (Array.isArray(raw?.media)) {
+    for (const media of raw.media) {
+      for (const url of [media?.url, media?.tco, media?.shortUrl, media?.short_url]) {
+        if (typeof url === 'string' && url) urls.add(url)
+      }
+    }
+  }
+  return urls
+}
+
+function getBestTweetVideoUrl(media: any): string | null {
+  const directUrls = [
+    media?.videoUrl,
+    media?.video_url,
+    media?.playbackUrl,
+    media?.playback_url,
+    media?.expandedUrl,
+    media?.expanded_url,
+    media?.url,
+  ].filter((url): url is string => typeof url === 'string' && /\.(mp4)(\?|$)/i.test(url))
+
+  const variants = [
+    ...(Array.isArray(media?.variants) ? media.variants : []),
+    ...(Array.isArray(media?.videoInfo?.variants) ? media.videoInfo.variants : []),
+    ...(Array.isArray(media?.video_info?.variants) ? media.video_info.variants : []),
+  ]
+
+  const mp4Variants = variants
+    .map((v: any) => ({
+      url: typeof v?.url === 'string' ? v.url : typeof v?.src === 'string' ? v.src : '',
+      bitrate: Number(v?.bitrate || v?.bit_rate || 0),
+      contentType: String(v?.content_type || v?.contentType || ''),
+    }))
+    .filter((v: { url: string; contentType: string }) =>
+      v.url && (v.contentType.includes('mp4') || /\.(mp4)(\?|$)/i.test(v.url))
+    )
+    .sort((a: { bitrate: number }, b: { bitrate: number }) => b.bitrate - a.bitrate)
+
+  return decodeUrl(mp4Variants[0]?.url || directUrls[0]) || null
+}
+
+function getTweetPosterUrl(media: any): string | null {
+  const url = firstString(
+    media?.mediaUrlHttps,
+    media?.media_url_https,
+    media?.mediaUrl,
+    media?.media_url,
+    media?.previewImageUrl,
+    media?.preview_image_url,
+    media?.thumbnailUrl,
+    media?.thumbnail_url
+  )
+  return url ? decodeUrl(url) : null
+}
+
+function getTweetCardPreview(raw: any): { url?: string; title?: string; description?: string; image?: string } | null {
+  const card = raw?.card || raw?.twitter_card || raw?.cardLegacy
+  if (!card) return null
+
+  const getBinding = (keys: string[]): any => {
+    const bindings = card?.binding_values || card?.bindingValues || card?.bindings
+    if (Array.isArray(bindings)) {
+      for (const key of keys) {
+        const found = bindings.find((item: any) => item?.key === key)
+        if (found) return found.value
+      }
+    }
+    if (bindings && typeof bindings === 'object') {
+      for (const key of keys) {
+        if (bindings[key]) return bindings[key]
+      }
+    }
+    return undefined
+  }
+
+  const bindingString = (keys: string[]): string => {
+    const value = getBinding(keys)
+    return decodeUrl(firstString(
+      value,
+      value?.string_value,
+      value?.stringValue,
+      value?.url,
+      value?.image_value?.url,
+      value?.imageValue?.url,
+    ))
+  }
+
+  const title = firstString(card?.title, bindingString(['title']))
+  const description = firstString(card?.description, bindingString(['description']))
+  const image = firstString(
+    card?.image,
+    card?.imageUrl,
+    card?.image_url,
+    bindingString([
+      'thumbnail_image_large',
+      'thumbnail_image',
+      'summary_photo_image_original',
+      'summary_photo_image',
+      'photo_image_full_size_original',
+      'player_image',
+    ])
+  )
+  const url = firstString(
+    card?.url,
+    card?.expandedUrl,
+    card?.expanded_url,
+    bindingString(['card_url', 'vanity_url', 'player_url'])
+  )
+
+  if (!url && !title && !description && !image) return null
+  return { url, title, description, image }
+}
+
+// ponytail: rdt-cli returns raw Reddit API data. Cover common Reddit media shapes:
+// native video, gallery media_metadata, direct image/video URLs, preview image, thumbnail.
+export function extractRedditMedia(raw: any): PostAttachment[] {
+  const source = raw?.crosspost_parent_list?.[0] || raw
+  const atts: PostAttachment[] = []
+
+  const redditVideo = source?.secure_media?.reddit_video || source?.media?.reddit_video
+  const redditVideoUrl = redditVideo?.fallback_url || redditVideo?.hls_url || redditVideo?.dash_url
+  if (redditVideoUrl) {
+    atts.push({
+      type: 'video',
+      url: decodeUrl(redditVideoUrl),
+      image: getRedditPreviewImage(source) || undefined,
+    })
+    return atts
+  }
+
+  const gallery = extractRedditGalleryMedia(source)
+  if (gallery.length > 0) return gallery
+
+  const mediaUrl = decodeUrl(firstString(source?.url_overridden_by_dest, source?.url))
+  if (mediaUrl && isVideoUrl(mediaUrl)) {
+    atts.push({ type: 'video', url: mediaUrl, image: getRedditPreviewImage(source) || undefined })
+    return atts
+  }
+
+  if (source?.post_hint === 'image' && mediaUrl && isImageUrl(mediaUrl)) {
+    atts.push({ type: 'image', url: mediaUrl })
+    return atts
+  }
+
+  const previewImages = source?.preview?.images
+  if (Array.isArray(previewImages) && previewImages.length > 0) {
+    const previewSource = previewImages[0]?.source
+    if (previewSource?.url) {
+      atts.push({ type: 'image', url: decodeUrl(previewSource.url) })
+      return atts
+    }
+  }
+
+  if (source?.thumbnail && !['self', 'default', 'nsfw', 'spoiler', ''].includes(source.thumbnail)) {
+    atts.push({ type: 'image', url: decodeUrl(source.thumbnail) })
+  }
+
+  return atts
+}
+
+function extractRedditGalleryMedia(raw: any): PostAttachment[] {
+  const metadata = raw?.media_metadata
+  if (!metadata || typeof metadata !== 'object') return []
+
+  const orderedIds = Array.isArray(raw?.gallery_data?.items)
+    ? raw.gallery_data.items.map((item: any) => item?.media_id).filter(Boolean)
+    : Object.keys(metadata)
+
+  return orderedIds.flatMap((id: string): PostAttachment[] => {
+    const item = metadata[id]
+    if (!item) return []
+
+    const mime = String(item?.m || '')
+    const source = item?.s || {}
+    const url = decodeUrl(firstString(source?.mp4, source?.gif, source?.u))
+    if (!url) return []
+
+    if (mime.includes('video') || isVideoUrl(url)) {
+      return [{ type: item?.e === 'AnimatedImage' ? 'gif' : 'video', url }]
+    }
+    return [{ type: 'image', url }]
+  })
+}
+
+function getRedditPreviewImage(raw: any): string | null {
+  const source = raw?.preview?.images?.[0]?.source
+  if (source?.url) return decodeUrl(source.url)
+  if (raw?.thumbnail && !['self', 'default', 'nsfw', 'spoiler', ''].includes(raw.thumbnail)) {
+    return decodeUrl(raw.thumbnail)
+  }
+  return null
+}

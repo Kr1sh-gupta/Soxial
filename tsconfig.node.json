@@ -1,0 +1,14 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "composite": true,
+    "outDir": "./out/types/node",
+    "lib": ["ES2022"],
+    "noImplicitAny": false,
+    "types": ["node", "electron-vite/node"],
+    "paths": {
+      "@main/*": ["./electron/main/*"]
+    }
+  },
+  "include": ["electron/**/*.ts"]
+}

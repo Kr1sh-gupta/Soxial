@@ -1,0 +1,186 @@
+import { execSync, spawn } from 'child_process'
+import { existsSync } from 'fs'
+import { homedir } from 'os'
+import { join } from 'path'
+import { app } from 'electron'
+import { logger } from './log'
+
+// Electron often inherits a minimal PATH; uv-installed CLIs live in ~/.local/bin
+const localBin = join(homedir(), '.local', 'bin')
+if (localBin && !process.env.PATH?.split(':').includes(localBin)) {
+  process.env.PATH = `${localBin}:${process.env.PATH || ''}`
+}
+
+function parseCliStdout(stdout: string): any {
+  const trimmed = stdout.trim()
+  if (!trimmed) throw new Error('empty stdout')
+  try {
+    return JSON.parse(trimmed)
+  } catch {
+    const start = trimmed.indexOf('{')
+    const end = trimmed.lastIndexOf('}')
+    if (start >= 0 && end > start) {
+      return JSON.parse(trimmed.slice(start, end + 1))
+    }
+    throw new Error('no JSON in stdout')
+  }
+}
+
+function normalizeCliEnvelope(parsed: any, code: number, stderr: string): CliResult {
+  const ok = parsed.ok ?? (code === 0)
+  let data = parsed.data
+  if (data === undefined && !parsed.error) {
+    data = parsed
+  }
+  let error: string | undefined
+  if (!ok) {
+    if (typeof parsed.error === 'object' && parsed.error?.message) {
+      error = parsed.error.message
+    } else if (typeof parsed.error === 'string') {
+      error = parsed.error
+    } else {
+      error = stderr.trim() || `Exit code ${code}`
+    }
+  }
+  return { ok, data: data ?? null, error }
+}
+
+function findBin(name: string): string | null {
+  try {
+    execSync(`which ${name}`, { stdio: 'pipe' })
+    return name
+  } catch {
+    return null
+  }
+}
+
+function getUvPath(): string | null {
+  return findBin('uv')
+}
+
+export function checkCli(name: 'twitter' | 'rdt'): boolean {
+  const found = findBin(name) !== null
+  logger.debug('cli', `check ${name}: ${found}`)
+  return found
+}
+
+export function ensureCliInstalled(name: 'twitter' | 'rdt'): boolean {
+  if (checkCli(name)) {
+    logger.info('cli', `${name} already installed`)
+    return true
+  }
+
+  const uv = getUvPath()
+  if (!uv) {
+    logger.info('cli', 'uv not found, installing...')
+    try {
+      execSync('curl -LsSf https://astral.sh/uv/install.sh | sh', { stdio: 'pipe', timeout: 60000 })
+      logger.info('cli', 'uv installed')
+    } catch {
+      logger.error('cli', 'failed to install uv')
+      return false
+    }
+  }
+
+  const pkg = name === 'twitter' ? 'twitter-cli' : 'rdt-cli'
+  try {
+    logger.info('cli', `installing ${pkg} via uv...`)
+    execSync(`uv tool install ${pkg}`, { stdio: 'pipe', timeout: 120000 })
+    const ok = checkCli(name)
+    logger.info('cli', `${pkg} installed: ${ok}`)
+    return ok
+  } catch {
+    logger.error('cli', `failed to install ${pkg}`)
+    return false
+  }
+}
+
+export async function runCli(bin: 'twitter' | 'rdt', args: string[]): Promise<CliResult> {
+  const cmd = `${bin} ${args.join(' ')}`
+  logger.info('cli', `running: ${cmd}`)
+  return new Promise((resolve) => {
+    const child = spawn(bin, args, { stdio: ['pipe', 'pipe', 'pipe'] })
+    let stdout = ''
+    let stderr = ''
+
+    child.stdout.on('data', (d) => { stdout += d.toString() })
+    child.stderr.on('data', (d) => { stderr += d.toString() })
+
+    child.on('close', (code) => {
+      logger.debug('cli', `exit code ${code}`, { stdout: stdout.slice(0, 500), stderr: stderr.slice(0, 500) })
+      try {
+        const parsed = parseCliStdout(stdout)
+        resolve(normalizeCliEnvelope(parsed, code ?? 1, stderr))
+        return
+      } catch { /* fall through */ }
+
+      if (code !== 0) {
+        resolve({ ok: false, data: null, error: stderr.trim() || stdout.trim() || `Exit code ${code}` })
+        return
+      }
+      resolve({ ok: true, data: stdout.trim() })
+    })
+
+    child.on('error', (err) => {
+      logger.error('cli', `spawn error: ${cmd}`, err.message)
+      resolve({ ok: false, data: null, error: err.message })
+    })
+  })
+}
+
+export interface CliResult {
+  ok: boolean
+  data: any
+  error?: string
+}
+
+/** Run twitter CLI. Compact `-c` is a global flag and must precede the subcommand. */
+export async function runTwitterCli(args: string[], options?: { compact?: boolean }): Promise<CliResult> {
+  const compact = options?.compact !== false
+  const fullArgs = compact ? ['-c', ...args] : args
+  return runCli('twitter', fullArgs)
+}
+
+/** Verify Twitter session via browser cookies (auto-extracted on first use). */
+export async function ensureTwitterAuth(): Promise<CliResult> {
+  logger.info('cli', 'twitter status — verifying session')
+  const status = await runCli('twitter', ['status', '--json'])
+  if (status.ok && status.data?.authenticated) {
+    const user = status.data.user
+    logger.info('cli', `twitter authenticated as ${user?.username || user?.screenName || 'unknown'}`)
+    return { ok: true, data: status.data }
+  }
+  return {
+    ok: false,
+    data: status.data ?? null,
+    error: status.error || 'No Twitter cookies found — log in to x.com in your browser, then retry',
+  }
+}
+
+export function checkCliAuth(bin: 'twitter' | 'rdt'): Promise<CliResult> {
+  if (bin === 'twitter') return runCli('twitter', ['status', '--json'])
+  return runCli('rdt', ['status', '--json'])
+}
+
+/** Extract browser cookies via `rdt login` (rdt-cli auth command). Idempotent when already authenticated. */
+export async function ensureRdtAuth(): Promise<CliResult> {
+  logger.info('cli', 'rdt login — extracting browser cookies')
+  await runCli('rdt', ['login'])
+  const status = await runCli('rdt', ['status', '--json'])
+  if (status.ok && status.data?.authenticated) {
+    logger.info('cli', `rdt authenticated as ${status.data.username || 'unknown'}`)
+    return { ok: true, data: status.data }
+  }
+  return {
+    ok: false,
+    data: status.data ?? null,
+    error: status.data?.error || status.error || 'No Reddit cookies found — log in to reddit.com in your browser, then retry',
+  }
+}
+
+export async function ensureRdtCliReady(): Promise<{ installed: boolean; authenticated: boolean; auth?: CliResult }> {
+  const installed = ensureCliInstalled('rdt')
+  if (!installed) return { installed: false, authenticated: false }
+  const auth = await ensureRdtAuth()
+  return { installed: true, authenticated: auth.ok, auth }
+}
