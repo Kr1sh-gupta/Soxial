@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "description": "Soxial is an AI-powered social media manager for X and Reddit.",
   "main": "./out/main/index.js",
-  "author": "rabden",
+  "author": "Hossain Jahed <rabden@users.noreply.github.com>",
   "scripts": {
     "dev": "LOG_LEVEL=debug GDK_GL='disabled' GTK_MODULES='' GTK_IM_MODULE='' NO_AT_BRIDGE=1 electron-vite dev",
     "build": "electron-vite build",
@@ -84,6 +84,11 @@
       {
         "from": "resources/icons",
         "to": "icons"
+      },
+      {
+        "from": "references",
+        "to": "references",
+        "filter": ["**/*.md"]
       }
     ],
     "mac": {
@@ -106,7 +111,9 @@
         "deb"
       ],
       "category": "Utility",
-      "icon": "resources/icons/icon.png"
+      "icon": "resources/icons/icon.png",
+      "desktopName": "com.soxial.desktop",
+      "maintainer": "Hossain Jahed <rabden@users.noreply.github.com>"
     }
   }
 }
