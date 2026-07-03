@@ -112,7 +112,6 @@
       ],
       "category": "Utility",
       "icon": "resources/icons/icon.png",
-      "desktopName": "com.soxial.desktop",
       "maintainer": "Hossain Jahed <rabden@users.noreply.github.com>"
     }
   }
