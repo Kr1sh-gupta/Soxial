@@ -1,7 +1,7 @@
 {
   "name": "soxial",
   "productName": "Soxial",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Soxial is an AI-powered social media manager for X and Reddit.",
   "main": "./out/main/index.js",
   "author": "Hossain Jahed <rabden@users.noreply.github.com>",
@@ -96,16 +96,14 @@
         "dmg",
         "zip"
       ],
-      "icon": "resources/icons/icon.icns",
-      "artifactName": "${productName}-${arch}.${ext}"
+      "icon": "resources/icons/icon.icns"
     },
     "win": {
       "target": [
         "nsis",
         "zip"
       ],
-      "icon": "resources/icons/icon.ico",
-      "artifactName": "${productName}.${ext}"
+      "icon": "resources/icons/icon.ico"
     },
     "linux": {
       "target": [
@@ -114,11 +112,7 @@
       ],
       "category": "Utility",
       "icon": "resources/icons/icon.png",
-      "maintainer": "Hossain Jahed <rabden@users.noreply.github.com>",
-      "artifactName": "${productName}.${ext}",
-      "deb": {
-        "artifactName": "${productName}_${arch}.${ext}"
-      }
+      "maintainer": "Hossain Jahed <rabden@users.noreply.github.com>"
     }
   }
 }

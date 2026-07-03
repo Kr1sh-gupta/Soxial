@@ -11,10 +11,10 @@ By Hossain Jahed
 
 | Platform | Download | Size | Instructions |
 |----------|----------|------|--------------|
-| **Linux** (AppImage) | [Soxial.AppImage](https://github.com/rabden/Soxial/releases/latest/download/Soxial.AppImage) | ~187 MB | `chmod +x Soxial.AppImage && ./Soxial.AppImage` |
-| **Linux** (deb) | [soxial_amd64.deb](https://github.com/rabden/Soxial/releases/latest/download/soxial_amd64.deb) | ~143 MB | `sudo dpkg -i soxial_amd64.deb` |
-| **macOS** (Apple Silicon) | [Soxial-arm64.dmg](https://github.com/rabden/Soxial/releases/latest/download/Soxial-arm64.dmg) | ~180 MB | Open dmg → drag to Applications. First launch: right-click → Open (unsigned) |
-| **Windows** | [Soxial.Setup.exe](https://github.com/rabden/Soxial/releases/latest/download/Soxial.Setup.exe) | ~147 MB | Run installer. SmartScreen warning → "More info" → "Run anyway" |
+| **Linux** (AppImage) | [Soxial-0.1.2.AppImage](https://github.com/rabden/Soxial/releases/download/v0.1.2/Soxial-0.1.2.AppImage) | ~187 MB | `chmod +x Soxial-0.1.2.AppImage && ./Soxial-0.1.2.AppImage` |
+| **Linux** (deb) | [soxial_0.1.2_amd64.deb](https://github.com/rabden/Soxial/releases/download/v0.1.2/soxial_0.1.2_amd64.deb) | ~143 MB | `sudo dpkg -i soxial_0.1.2_amd64.deb` |
+| **macOS** (Apple Silicon) | [Soxial-0.1.2-arm64.dmg](https://github.com/rabden/Soxial/releases/download/v0.1.2/Soxial-0.1.2-arm64.dmg) | ~180 MB | Open dmg → drag to Applications. First launch: right-click → Open (unsigned) |
+| **Windows** | [Soxial.Setup.0.1.2.exe](https://github.com/rabden/Soxial/releases/download/v0.1.2/Soxial.Setup.0.1.2.exe) | ~147 MB | Run installer. SmartScreen warning → "More info" → "Run anyway" |
 
 > **Loom walkthrough**: [https://youtu.be/vRNKqhSeWgY](https://youtu.be/vRNKqhSeWgY)
 
