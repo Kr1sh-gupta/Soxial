@@ -45,39 +45,46 @@ function normalizeCliEnvelope(parsed: any, code: number, stderr: string): CliRes
   return { ok, data: data ?? null, error }
 }
 
-function findBin(name: string): string | null {
-  try {
-    execSync(`which ${name}`, { stdio: 'pipe' })
-    return name
-  } catch {
-    return null
-  }
+async function findBin(name: string): Promise<string | null> {
+  return new Promise((resolve) => {
+    const child = spawn('which', [name], { stdio: ['pipe', 'pipe', 'pipe'] })
+    let stdout = ''
+    child.stdout.on('data', (d) => { stdout += d.toString() })
+    child.on('close', (code) => {
+      resolve(code === 0 ? name : null)
+    })
+    child.on('error', () => resolve(null))
+  })
 }
 
-function getUvPath(): string | null {
-  return findBin('uv')
+async function getUvPath(): Promise<string | null> {
+  return await findBin('uv')
 }
 
-export function checkCli(name: 'twitter' | 'rdt'): boolean {
-  const found = findBin(name) !== null
+export async function checkCli(name: 'twitter' | 'rdt'): Promise<boolean> {
+  const found = await findBin(name) !== null
   logger.debug('cli', `check ${name}: ${found}`)
   return found
 }
 
-export function ensureCliInstalled(name: 'twitter' | 'rdt'): boolean {
-  if (checkCli(name)) {
+export async function ensureCliInstalled(name: 'twitter' | 'rdt'): Promise<boolean> {
+  if (await checkCli(name)) {
     logger.info('cli', `${name} already installed`)
     return true
   }
 
-  const uv = getUvPath()
+  const uv = await getUvPath()
   if (!uv) {
     logger.info('cli', 'uv not found, installing...')
     try {
-      execSync('curl -LsSf https://astral.sh/uv/install.sh | sh', { stdio: 'pipe', timeout: 60000 })
+      await new Promise<void>((resolve, reject) => {
+        const child = spawn('sh', ['-c', 'curl -LsSf https://astral.sh/uv/install.sh | sh'], { stdio: ['pipe', 'pipe', 'pipe'] })
+        child.on('close', (code) => code === 0 ? resolve() : reject(new Error('uv install failed')))
+        child.on('error', reject)
+      })
       logger.info('cli', 'uv installed')
-    } catch {
-      logger.error('cli', 'failed to install uv')
+    } catch (err) {
+      logger.error('cli', 'failed to install uv', err)
       return false
     }
   }
@@ -85,12 +92,16 @@ export function ensureCliInstalled(name: 'twitter' | 'rdt'): boolean {
   const pkg = name === 'twitter' ? 'twitter-cli' : 'rdt-cli'
   try {
     logger.info('cli', `installing ${pkg} via uv...`)
-    execSync(`uv tool install ${pkg}`, { stdio: 'pipe', timeout: 120000 })
-    const ok = checkCli(name)
+    await new Promise<void>((resolve, reject) => {
+      const child = spawn('uv', ['tool', 'install', pkg], { stdio: ['pipe', 'pipe', 'pipe'] })
+      child.on('close', (code) => code === 0 ? resolve() : reject(new Error(`${pkg} install failed`)))
+      child.on('error', reject)
+    })
+    const ok = await checkCli(name)
     logger.info('cli', `${pkg} installed: ${ok}`)
     return ok
-  } catch {
-    logger.error('cli', `failed to install ${pkg}`)
+  } catch (err) {
+    logger.error('cli', `failed to install ${pkg}`, err)
     return false
   }
 }
@@ -179,7 +190,7 @@ export async function ensureRdtAuth(): Promise<CliResult> {
 }
 
 export async function ensureRdtCliReady(): Promise<{ installed: boolean; authenticated: boolean; auth?: CliResult }> {
-  const installed = ensureCliInstalled('rdt')
+  const installed = await ensureCliInstalled('rdt')
   if (!installed) return { installed: false, authenticated: false }
   const auth = await ensureRdtAuth()
   return { installed: true, authenticated: auth.ok, auth }

@@ -199,9 +199,9 @@ function setupIpc() {
     return insertRow(table, data)
   })
 
-  ipcMain.handle('cli:check', (_e, name: 'twitter' | 'rdt') => checkCli(name))
+  ipcMain.handle('cli:check', async (_e, name: 'twitter' | 'rdt') => checkCli(name))
 
-  ipcMain.handle('cli:install', (_e, name: 'twitter' | 'rdt') => ensureCliInstalled(name))
+  ipcMain.handle('cli:install', async (_e, name: 'twitter' | 'rdt') => ensureCliInstalled(name))
 
   ipcMain.handle('cli:checkAuth', async (_e, name: 'twitter' | 'rdt') => {
     logger.info('main', `cli:checkAuth ${name}`)
