@@ -8,6 +8,7 @@ import {
 import { RichContent } from 'src/components/rich-content'
 import { Reasoning, ReasoningTrigger, ReasoningContent } from 'src/components/ai-elements/reasoning'
 import { QuestionInput, QuestionData } from 'src/components/ui/question-input'
+import { AppLogo } from 'src/components/ui/app-logo'
 
 const EASE = 'cubic-bezier(0.32, 0.72, 0, 1)'
 
@@ -159,8 +160,11 @@ function PrimaryButton({ children, onClick, disabled, className = '' }: { childr
 function StepWelcome({ onNext }: { onNext: () => void }) {
   return (
     <div className="flex flex-col items-center text-center py-12">
-      <div className="w-12 h-12 rounded-2xl bg-foreground flex items-center justify-center mb-6">
-        <Sparkles className="size-6 text-background" strokeWidth={1.5} />
+      <div className="mb-6">
+        <AppLogo 
+          showLabel={false} 
+          iconClassName="size-16"
+        />
       </div>
       <h1 className="text-[32px] font-semibold text-foreground tracking-tight leading-tight max-w-md">
         Hi, I&rsquo;m Soxial
@@ -427,6 +431,7 @@ function StepAiOnboarding({ formData, onComplete }: { formData: any; onComplete:
   const [pendingBatchId, setPendingBatchId] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [complete, setComplete] = useState(false)
+  const [savedConversationState, setSavedConversationState] = useState<any[] | null>(null)
 
   const stepsRef = useRef<StepItem[]>([])
   const stepCounter = useRef(0)
@@ -491,6 +496,7 @@ function StepAiOnboarding({ formData, onComplete }: { formData: any; onComplete:
     setPendingQuestions(null)
     setError(null)
     setComplete(false)
+    setSavedConversationState(null) // Clear saved state on fresh start
 
     window.api.runOnboarding(formData)
       .then(result => {
@@ -505,6 +511,47 @@ function StepAiOnboarding({ formData, onComplete }: { formData: any; onComplete:
       .catch(err => {
         setStreaming(false)
         setError(err.message || 'An error occurred during onboarding')
+        // Save conversation state for retry
+        setSavedConversationState(messages.map(m => ({
+          role: m.role,
+          content: m.content,
+          steps: m.steps
+        })))
+      })
+  }
+
+  const retryOnboarding = () => {
+    // Preserve current state and retry
+    setError(null)
+    setStreaming(true)
+    
+    // Use saved conversation state if available, otherwise use current messages
+    const messagesToContinue = savedConversationState || messages.map(m => ({
+      role: m.role,
+      content: m.content,
+      steps: m.steps
+    }))
+    
+    // Continue with current context - pass existing messages
+    window.api.runOnboarding(formData, messagesToContinue)
+      .then(result => {
+        setStreaming(false)
+        if (result?.success) {
+          commitStreamingMessage()
+          setComplete(true)
+        } else {
+          setError(result?.error || 'Failed to complete onboarding')
+        }
+      })
+      .catch(err => {
+        setStreaming(false)
+        setError(err.message || 'An error occurred during onboarding')
+        // Save conversation state for retry
+        setSavedConversationState(messages.map(m => ({
+          role: m.role,
+          content: m.content,
+          steps: m.steps
+        })))
       })
   }
 
@@ -513,10 +560,22 @@ function StepAiOnboarding({ formData, onComplete }: { formData: any; onComplete:
     setSteps([{ type: 'reasoning', text: 'Initializing onboarding...' }])
 
     window.api.onOnboardingChunk((text) => {
-      if (text === 'PHASE:gather' || text === 'PHASE:interview') return
-      streamTextRef.current += text
-      setStreamText(streamTextRef.current)
-    })
+    if (text === 'PHASE:gather' || text === 'PHASE:interview') return
+    // Check for model fallback messages
+    if (text.includes('Switching to')) {
+      const stepsRefCurrent = stepsRef.current
+      const last = stepsRefCurrent[stepsRefCurrent.length - 1]
+      if (last && last.type === 'reasoning') {
+        last.text = text
+      } else {
+        stepsRef.current.push({ type: 'reasoning', text })
+      }
+      setSteps([...stepsRef.current])
+      return
+    }
+    streamTextRef.current += text
+    setStreamText(streamTextRef.current)
+  })
 
     window.api.onOnboardingReasoning((text) => {
       const s = stepsRef.current
@@ -703,7 +762,7 @@ function StepAiOnboarding({ formData, onComplete }: { formData: any; onComplete:
                 <span className="truncate">{error}</span>
               </div>
               <button
-                onClick={startOnboarding}
+                onClick={retryOnboarding}
                 className="group flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-primary text-primary-foreground text-xs font-medium hover:opacity-90 transition-all duration-500 active:scale-[0.96] shrink-0"
                 style={{ transitionTimingFunction: EASE }}
               >

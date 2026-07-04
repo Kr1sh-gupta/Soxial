@@ -1,6 +1,6 @@
 import { streamText, generateText as sdkGenerateText, stepCountIs } from 'ai'
 import { createGoogleGenerativeAI } from '@ai-sdk/google'
-import { getProfile } from './db'
+import { getProfile, trackModelRequest, isModelRateLimited, getApiTier } from './db'
 import { createTools } from './tools'
 import { logger } from './log'
 import { ipcMain } from 'electron'
@@ -13,9 +13,18 @@ const CHAT_MODEL = 'gemini-3.1-flash-lite'
 const TITLE_MODEL = 'gemma-4-31b-it'
 
 const MODEL_LABELS: Record<string, string> = {
-  'Gemini 3.1 Flash Lite': CHAT_MODEL,
+  'Gemini 3.5 Flash': 'gemini-3.5-flash',
+  'gemini-3.5-flash': 'gemini-3.5-flash',
+  'Gemini 3.1 Pro': 'gemini-3.1-pro',
+  'gemini-3.1-pro': 'gemini-3.1-pro',
+  'Gemini 3.1 Flash Lite': 'gemini-3.1-flash-lite',
   'gemini-3.1-flash-lite': CHAT_MODEL,
 }
+
+// Fallback chain for different scenarios
+export const ONBOARDING_MODEL_FALLBACK = ['gemini-3.5-flash', 'gemini-3.1-flash-lite']
+export const CHAT_MODEL_FALLBACK_PRO = ['gemini-3.5-flash', 'gemini-3.1-pro', 'gemini-3.1-flash-lite']
+export const CHAT_MODEL_FALLBACK_FREE = ['gemini-3.1-flash-lite', 'gemini-3.5-flash']
 
 const EFFORT_MAP: Record<string, string> = {
   Low: 'low',
@@ -28,9 +37,12 @@ export interface AgentOptions {
   model?: string
   effort?: string
   maxSteps?: number
+  fallbackChain?: string[]
+  skipRateLimitCheck?: boolean
+  onModelSwitch?: (model: string, index: number, total: number) => void
 }
 
-function getApiKey(): string {
+export function getApiKey(): string {
   const profile = getProfile()
   const apiKey = profile?.gemini_api_key || process.env.GEMINI_API_KEY
   if (!apiKey)
@@ -44,8 +56,36 @@ export function getAgentConfig(options?: AgentOptions) {
   const apiKey = getApiKey()
   const google = createGoogleGenerativeAI({ apiKey })
   const profile = getProfile()
-  const modelLabel = options?.model || 'Gemini 3.1 Flash Lite'
-  const modelId = MODEL_LABELS[modelLabel] || CHAT_MODEL
+  const tier = getApiTier().tier
+  
+  // Determine fallback chain based on scenario
+  let fallbackChain = options?.fallbackChain
+  if (!fallbackChain) {
+    if (tier === 'pro') {
+      fallbackChain = CHAT_MODEL_FALLBACK_PRO
+    } else {
+      fallbackChain = CHAT_MODEL_FALLBACK_FREE
+    }
+  }
+  
+  // Select model - either specified or first non-rate-limited in fallback chain
+  let modelId = options?.model ? MODEL_LABELS[options.model] : undefined
+  if (!modelId) {
+    for (const candidateModel of fallbackChain) {
+      if (!options?.skipRateLimitCheck && isModelRateLimited(candidateModel, tier)) {
+        logger.warn('agent', `model ${candidateModel} is rate limited, trying next in chain`)
+        continue
+      }
+      modelId = candidateModel
+      break
+    }
+    // If all are rate limited, use the first one anyway and let it fail
+    if (!modelId) {
+      modelId = fallbackChain[0]
+      logger.warn('agent', `all models in fallback chain are rate limited, using ${modelId} anyway`)
+    }
+  }
+  
   const effortLabel = options?.effort || 'Medium'
   const thinkingLevel = EFFORT_MAP[effortLabel] || 'medium'
 
@@ -53,12 +93,20 @@ export function getAgentConfig(options?: AgentOptions) {
   if (profile?.growth_strategy) {
     system += `\n\n=== PERSONALIZED GROWTH STRATEGY ===\nThis is the user's personalized growth strategy, created during onboarding. Follow it in all content creation and engagement:\n\n${profile.growth_strategy}`
   }
+  
+  // Track the request for the selected model
+  if (!options?.skipRateLimitCheck) {
+    trackModelRequest(modelId)
+  }
+  
   return {
     system,
     tools: createTools({ defaultMax: 10 }),
     maxSteps: options?.maxSteps ?? 40,
     model: google(modelId),
     thinkingLevel,
+    modelId,
+    tier,
   }
 }
 
@@ -481,157 +529,259 @@ export async function runAgent(
   onInjectedMessages?: (messages: AppMessage[]) => void,
 ) {
   let fullText = ''
-  try {
-    const config = getAgentConfig(options)
-    const tools = toolsOverride || config.tools
-    const system = systemPromptOverride || config.system
-    const maxSteps = config.maxSteps
-
-    // Convert initial messages once; subsequent steps use SDK response messages
-    let modelMessages = await toModelMessages(messages)
-
-    let stepCount = 0
-    let strippedToolHistory = false
-    logger.info(
-      'agent',
-      `runAgent started, maxSteps=${maxSteps}, messages=${modelMessages.length}`,
-    )
-
-    while (stepCount < maxSteps) {
-      if (abortController?.signal.aborted) {
-        logger.info('agent', 'aborted before step')
-        onDone(fullText)
-        return
-      }
-      stepCount++
-      logger.info('agent', `step ${stepCount}/${maxSteps} — calling streamText`, {
-        tools: Object.keys(tools).length,
-        messages: modelMessages.length,
+  const fallbackChain = options?.fallbackChain || (getApiTier().tier === 'pro' ? CHAT_MODEL_FALLBACK_PRO : CHAT_MODEL_FALLBACK_FREE)
+  
+  async function attemptWithModel(modelIndex: number, currentModelMessages: any[]): Promise<{ success: boolean; updatedMessages: any[] }> {
+    if (modelIndex >= fallbackChain.length) {
+      return { success: false, updatedMessages: currentModelMessages }
+    }
+    
+    const currentModel = fallbackChain[modelIndex]
+    logger.info('agent', `attempting with model: ${currentModel} (${modelIndex + 1}/${fallbackChain.length})`)
+    
+    try {
+      const config = getAgentConfig({
+        ...options,
+        model: currentModel,
+        fallbackChain: fallbackChain.slice(modelIndex),
+        skipRateLimitCheck: false
       })
+      const tools = toolsOverride || config.tools
+      const system = systemPromptOverride || config.system
+      const maxSteps = config.maxSteps
 
-      let hasToolCalls = false
-      let responseMessages: any[] = []
+      // Use the passed-in messages (accumulated from previous attempts or fresh start)
+      let modelMessages = currentModelMessages
 
-      try {
-        const result = streamText({
-          model: config.model,
-          system,
-          messages: modelMessages,
-          tools: normalizeTools(tools),
-          stopWhen: stepCountIs(1),
-          onError: ({ error }) => {
-            logger.error('agent', 'streamText error', error)
-          },
-          providerOptions: {
-            google: {
-              thinkingConfig: {
-                thinkingLevel: config.thinkingLevel,
-                includeThoughts: true,
-              },
-            },
-          },
-          ...(abortController?.signal
-            ? { abortSignal: abortController.signal }
-            : {}),
-        })
-
-        for await (const part of result.fullStream) {
-          if (abortController?.signal.aborted) {
-            logger.info('agent', 'aborted during stream')
-            onDone(fullText)
-            return
-          }
-
-          switch (part.type) {
-            case 'text-delta':
-              fullText += part.text
-              onChunk(part.text)
-              break
-            case 'reasoning-delta':
-              onReasoning?.(part.text)
-              break
-            case 'tool-call':
-              hasToolCalls = true
-              onToolCall(part.toolName, part.input)
-              logger.info('agent', `tool-call: ${part.toolName}`, part.input)
-              break
-          case 'tool-result': {
-            const isImageTool = part.toolName === 'inspect_image_url'
-            const truncateLimit = SOCIAL_FETCH_TOOLS.has(part.toolName) || isImageTool
-              ? Infinity
-              : 15000
-            let outputForUi = part.output
-            if (isImageTool && outputForUi?.data) {
-              outputForUi = { ...outputForUi, data: undefined, _note: 'Image sent to model via toModelOutput' }
-            }
-            const resultStr = JSON.stringify(outputForUi)
-            const truncated =
-              resultStr.length > truncateLimit
-                ? resultStr.slice(0, truncateLimit) + '...[truncated]'
-                : outputForUi
-            onToolResult(part.toolName, truncated)
-            logger.info('agent', `tool-result: ${part.toolName}`)
-            break
-          }
-            case 'error':
-              logger.error('agent', 'stream error part', part.error)
-              break
-          }
-        }
-
-        const response = await result.response
-        responseMessages = response.messages || []
-      } catch (e: any) {
-        if (!strippedToolHistory && (e.statusCode === 400 || e.data?.error?.status === 'INVALID_ARGUMENT' || e.message?.includes('No output generated'))) {
-          strippedToolHistory = true
-          logger.warn('agent', '400 INVALID_ARGUMENT — stripping tool history and retrying')
-          modelMessages = modelMessages.filter((m: any) => {
-            if (m.role === 'tool') return false
-            if (m.role === 'assistant' && Array.isArray(m.content)) {
-              m.content = m.content.filter((c: any) => c.type !== 'tool-call')
-              return m.content.length > 0
-            }
-            return true
-          })
-          stepCount--
-          continue
-        }
-        throw e
-      }
-
-      if (responseMessages.length > 0) {
-        modelMessages.push(...responseMessages)
-      }
-
+      let stepCount = 0
+      let strippedToolHistory = false
       logger.info(
         'agent',
-        `step ${stepCount} done — toolCalls=${hasToolCalls}, textLen=${fullText.length}`,
+        `runAgent started with ${currentModel}, maxSteps=${maxSteps}, messages=${modelMessages.length}`,
       )
 
-      const injected = drainInjectedMessages?.() ?? []
-      if (injected.length > 0) {
-        const injectedModelMessages = await toModelMessages(injected)
-        modelMessages.push(...injectedModelMessages)
-        onInjectedMessages?.(injected)
-        logger.info('agent', `injected ${injected.length} message(s) into active run`)
+      while (stepCount < maxSteps) {
+        if (abortController?.signal.aborted) {
+          logger.info('agent', 'aborted before step')
+          onDone(fullText)
+          return { success: true, updatedMessages: modelMessages }
+        }
+        stepCount++
+        logger.info('agent', `step ${stepCount}/${maxSteps} — calling streamText with ${currentModel}`, {
+          tools: Object.keys(tools).length,
+          messages: modelMessages.length,
+        })
+
+        let hasToolCalls = false
+        let responseMessages: any[] = []
+
+        try {
+          const result = streamText({
+            model: config.model,
+            system,
+            messages: modelMessages,
+            tools: normalizeTools(tools),
+            stopWhen: stepCountIs(1),
+            onError: ({ error }) => {
+              logger.error('agent', 'streamText error', error)
+            },
+            providerOptions: {
+              google: {
+                thinkingConfig: {
+                  thinkingLevel: config.thinkingLevel,
+                  includeThoughts: true,
+                },
+              },
+            },
+            ...(abortController?.signal
+              ? { abortSignal: abortController.signal }
+              : {}),
+          })
+
+          for await (const part of result.fullStream) {
+            if (abortController?.signal.aborted) {
+              logger.info('agent', 'aborted during stream')
+              onDone(fullText)
+              return { success: true, updatedMessages: modelMessages }
+            }
+
+            switch (part.type) {
+              case 'text-delta':
+                fullText += part.text
+                onChunk(part.text)
+                break
+              case 'reasoning-delta':
+                onReasoning?.(part.text)
+                break
+              case 'tool-call':
+                hasToolCalls = true
+                onToolCall(part.toolName, part.input)
+                logger.info('agent', `tool-call: ${part.toolName}`, part.input)
+                break
+              case 'tool-result': {
+                const isImageTool = part.toolName === 'inspect_image_url'
+                const truncateLimit = SOCIAL_FETCH_TOOLS.has(part.toolName) || isImageTool
+                  ? Infinity
+                  : 15000
+                let outputForUi = part.output
+                if (isImageTool && outputForUi?.data) {
+                  outputForUi = { ...outputForUi, data: undefined, _note: 'Image sent to model via toModelOutput' }
+                }
+                const resultStr = JSON.stringify(outputForUi)
+                const truncated =
+                  resultStr.length > truncateLimit
+                    ? resultStr.slice(0, truncateLimit) + '...[truncated]'
+                    : outputForUi
+                onToolResult(part.toolName, truncated)
+                logger.info('agent', `tool-result: ${part.toolName}`)
+                break
+              }
+              case 'error':
+                logger.error('agent', 'stream error part', part.error)
+                break
+            }
+          }
+
+          const response = await result.response
+          responseMessages = response.messages || []
+        } catch (e: any) {
+          // Check for rate limit errors
+          const errorMessage = e?.message || ''
+          const statusCode = e?.statusCode || e?.status
+          const errorData = e?.data?.error
+          const errorStatus = errorData?.status
+          
+          // Comprehensive rate limit detection
+          const isRateLimit = 
+            statusCode === 429 || 
+            errorStatus === 'RESOURCE_EXHAUSTED' ||
+            errorMessage.includes('quota') || 
+            errorMessage.includes('rate limit') ||
+            errorMessage.includes('RESOURCE_EXHAUSTED') ||
+            errorMessage.includes('429') ||
+            errorMessage.includes('exceeded your current quota') ||
+            (errorData && errorData.message && errorData.message.includes('quota'))
+          
+          if (isRateLimit) {
+            logger.warn('agent', `${currentModel} hit rate limit, trying next model in chain`, { 
+              statusCode, 
+              errorMessage: errorMessage.substring(0, 200) 
+            })
+            return { success: false, updatedMessages: modelMessages }
+          }
+          
+          if (!strippedToolHistory && (e.statusCode === 400 || errorData?.status === 'INVALID_ARGUMENT' || e.message?.includes('No output generated'))) {
+            strippedToolHistory = true
+            logger.warn('agent', '400 INVALID_ARGUMENT — stripping tool history and retrying')
+            modelMessages = modelMessages.filter((m: any) => {
+              if (m.role === 'tool') return false
+              if (m.role === 'assistant' && Array.isArray(m.content)) {
+                m.content = m.content.filter((c: any) => c.type !== 'tool-call')
+                return m.content.length > 0
+              }
+              return true
+            })
+            stepCount--
+            continue
+          }
+          
+          // For any other error, also try fallback instead of throwing
+          logger.warn('agent', `${currentModel} encountered error, trying next model in chain`, {
+            error: errorMessage.substring(0, 200),
+            statusCode
+          })
+          return { success: false, updatedMessages: modelMessages }
+        }
+
+        if (responseMessages.length > 0) {
+          modelMessages.push(...responseMessages)
+        }
+
+        logger.info(
+          'agent',
+          `step ${stepCount} done — toolCalls=${hasToolCalls}, textLen=${fullText.length}`,
+        )
+
+        const injected = drainInjectedMessages?.() ?? []
+        if (injected.length > 0) {
+          const injectedModelMessages = await toModelMessages(injected)
+          modelMessages.push(...injectedModelMessages)
+          onInjectedMessages?.(injected)
+          logger.info('agent', `injected ${injected.length} message(s) into active run`)
+        }
+
+        if (!hasToolCalls && injected.length === 0) {
+          logger.info('agent', `done — ${fullText.length} chars total`)
+          onDone(fullText)
+          return { success: true, updatedMessages: modelMessages }
+        }
       }
 
-      if (!hasToolCalls && injected.length === 0) {
-        logger.info('agent', `done — ${fullText.length} chars total`)
+      logger.warn('agent', `reached max steps (${config?.maxSteps})`)
+      onDone(fullText + '\n\n[Reached max tool call steps]')
+      return { success: true, updatedMessages: modelMessages }
+    } catch (e: any) {
+      // Check for rate limit errors at the attempt level
+      const errorMessage = e?.message || ''
+      const statusCode = e?.statusCode || e?.status
+      const errorData = e?.data?.error
+      const errorStatus = errorData?.status
+      
+      // Comprehensive error detection for fallback
+      const shouldFallback = 
+        statusCode === 429 || 
+        errorStatus === 'RESOURCE_EXHAUSTED' ||
+        errorMessage.includes('quota') || 
+        errorMessage.includes('rate limit') ||
+        errorMessage.includes('RESOURCE_EXHAUSTED') ||
+        errorMessage.includes('429') ||
+        errorMessage.includes('exceeded your current quota') ||
+        errorMessage.includes('No output generated') ||
+        (errorData && errorData.message && errorData.message.includes('quota'))
+      
+      if (shouldFallback) {
+        logger.warn('agent', `${currentModel} hit error at attempt level, trying next model`, {
+          error: errorMessage.substring(0, 200),
+          statusCode
+        })
+        return { success: false, updatedMessages: modelMessages }
+      }
+      
+      if (abortController?.signal.aborted) {
+        logger.info('agent', 'aborted by user')
         onDone(fullText)
-        return
+        return { success: true, updatedMessages: modelMessages }
       }
+      
+      // For any other error, also try fallback as a last resort
+      logger.warn('agent', `${currentModel} encountered unexpected error, trying next model`, {
+        error: errorMessage.substring(0, 200)
+      })
+      return { success: false, updatedMessages: modelMessages }
     }
-
-    logger.warn('agent', `reached max steps (${maxSteps})`)
-    onDone(fullText + '\n\n[Reached max tool call steps]')
+  }
+  
+  try {
+    // Convert initial messages to model format
+    let currentMessages = await toModelMessages(messages)
+    
+    // Try each model in the fallback chain until one succeeds
+    for (let i = 0; i < fallbackChain.length; i++) {
+      const { success, updatedMessages } = await attemptWithModel(i, currentMessages)
+      if (success) {
+        return // Success, exit
+      }
+      // Failed, use updated messages and try next model
+      currentMessages = updatedMessages
+      fullText = ''
+      logger.info('agent', `model ${fallbackChain[i]} failed, trying next model with ${currentMessages.length} messages`)
+    }
+    
+    // All models failed
+    logger.error('agent', 'all models in fallback chain failed')
+    onError('All available models failed or hit rate limits. Please try again later or upgrade your API tier.')
   } catch (e: any) {
-    if (abortController?.signal.aborted) {
-      logger.info('agent', 'aborted by user')
-      onDone(fullText)
-      return
-    }
-    logger.error('agent', 'runAgent error', e.message)
-    onError(e.message)
+    logger.error('agent', `unexpected error: ${e.message}`)
+    onError(e.message || 'An unexpected error occurred')
   }
 }

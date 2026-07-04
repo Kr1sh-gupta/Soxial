@@ -1,9 +1,13 @@
 import { useState, useEffect } from 'react'
-import { ArrowLeft } from 'lucide-react'
+import { ArrowLeft, Key, Save, Check } from 'lucide-react'
 import { cn } from 'src/lib/utils'
 
 export default function Profile({ profile, onBack }: { profile: any; onBack: () => void }) {
   const [data, setData] = useState<Record<string, any[]>>({})
+  const [showApiKeyInput, setShowApiKeyInput] = useState(false)
+  const [newApiKey, setNewApiKey] = useState('')
+  const [apiKeySaving, setApiKeySaving] = useState(false)
+  const [apiKeySaved, setApiKeySaved] = useState(false)
 
   useEffect(() => {
     Promise.all([
@@ -38,6 +42,26 @@ export default function Profile({ profile, onBack }: { profile: any; onBack: () 
 
   const hasStrategy = profile?.growth_strategy || data.pillars?.length || data.hooks?.length
   const hasGuardrails = meta.length > 0 || bannedPhrases.length > 0 || naturalElements.length > 0 || data.targets?.length > 0
+
+  const handleApiKeySave = async () => {
+    if (!newApiKey.trim()) return
+    
+    setApiKeySaving(true)
+    try {
+      await window.api.updateProfile({ gemini_api_key: newApiKey.trim() })
+      setApiKeySaved(true)
+      setNewApiKey('')
+      setTimeout(() => {
+        setShowApiKeyInput(false)
+        setApiKeySaved(false)
+      }, 1500)
+    } catch (err) {
+      console.error('Failed to update API key:', err)
+      alert('Failed to update API key. Please try again.')
+    } finally {
+      setApiKeySaving(false)
+    }
+  }
 
   return (
     <div className="flex-1 overflow-y-auto selection:bg-foreground selection:text-background pb-32">
@@ -198,6 +222,66 @@ export default function Profile({ profile, onBack }: { profile: any; onBack: () 
             )}
           </div>
         )}
+
+        {/* API Key Settings */}
+        <section className="mt-32 border-t border-white/[0.04] pt-12">
+          <SectionHeading>API Settings</SectionHeading>
+          <div className="mt-6 space-y-4">
+            {!showApiKeyInput ? (
+              <button
+                onClick={() => setShowApiKeyInput(true)}
+                className="flex items-center gap-2 text-sm text-muted-foreground/60 hover:text-foreground transition-colors"
+              >
+                <Key className="size-4" />
+                Change Google AI Studio API Key
+              </button>
+            ) : (
+              <div className="space-y-4">
+                <div className="flex gap-3">
+                  <input
+                    type="password"
+                    value={newApiKey}
+                    onChange={(e) => setNewApiKey(e.target.value)}
+                    placeholder="Enter new API key..."
+                    className="flex-1 bg-white/[0.02] border border-white/[0.06] rounded-lg px-4 py-2.5 text-sm text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:border-white/[0.12] transition-colors"
+                  />
+                  <button
+                    onClick={handleApiKeySave}
+                    disabled={apiKeySaving || !newApiKey.trim()}
+                    className="flex items-center gap-2 px-4 py-2.5 bg-foreground text-background rounded-lg text-sm font-medium hover:opacity-90 transition-opacity disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    {apiKeySaving ? (
+                      <span className="animate-pulse">Saving...</span>
+                    ) : apiKeySaved ? (
+                      <>
+                        <Check className="size-4" />
+                        Saved
+                      </>
+                    ) : (
+                      <>
+                        <Save className="size-4" />
+                        Save
+                      </>
+                    )}
+                  </button>
+                  <button
+                    onClick={() => {
+                      setShowApiKeyInput(false)
+                      setNewApiKey('')
+                      setApiKeySaved(false)
+                    }}
+                    className="px-4 py-2.5 text-sm text-muted-foreground/60 hover:text-foreground transition-colors"
+                  >
+                    Cancel
+                  </button>
+                </div>
+                <p className="text-[12px] text-muted-foreground/40">
+                  Get your API key from <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener noreferrer" className="underline hover:text-foreground/60">Google AI Studio</a>
+                </p>
+              </div>
+            )}
+          </div>
+        </section>
 
         {/* Footer */}
         {profile?.created_at && (

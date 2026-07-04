@@ -340,6 +340,10 @@ export default function Chat({ initialSessionId }: { initialSessionId?: number |
     type: "single" | "multi" | "text";
     options?: string[];
   } | null>(null);
+  const [apiTier, setApiTier] = useState<{ tier: string } | null>(null);
+  const [availableModels, setAvailableModels] = useState<string[]>([]);
+  const [rateLimitInfo, setRateLimitInfo] = useState<Record<string, { usage: { rpm: number; rpd: number }; limits: { rpm: number; rpd: number } }>>({});
+  const [rateLimitReached, setRateLimitReached] = useState(false);
 
   function parseAttachments(raw: any): ChatAttachment[] | undefined {
     if (!raw) return undefined;
@@ -442,7 +446,46 @@ export default function Chat({ initialSessionId }: { initialSessionId?: number |
     loadSessions();
     window.api.getProfile().then(setProfile);
     loadScheduledCount();
+    loadApiInfo();
   }, []);
+
+  async function loadApiInfo() {
+    try {
+      const tier = await window.api.getTier();
+      setApiTier(tier);
+      
+      const models = await window.api.getAvailableModels();
+      setAvailableModels(models);
+      
+      // Update selected model if current is not in available models
+      if (models.length > 0 && !models.includes(selectedModel)) {
+        const defaultModel = await window.api.getDefaultModel();
+        setSelectedModel(defaultModel);
+      }
+      
+      // Load rate limit info for all models
+      const rateInfo: Record<string, { usage: { rpm: number; rpd: number }; limits: { rpm: number; rpd: number } }> = {};
+      for (const model of models) {
+        const info = await window.api.getModelUsage(model);
+        rateInfo[model] = info;
+      }
+      setRateLimitInfo(rateInfo);
+      
+      // Check if any model has reached rate limits
+      const anyRateLimited = Object.values(rateInfo).some(
+        info => info.usage.rpm >= info.limits.rpm || info.usage.rpd >= info.limits.rpd
+      );
+      setRateLimitReached(anyRateLimited);
+    } catch (err) {
+      console.error('Failed to load API info:', err);
+    }
+  }
+
+  function checkRateLimitForModel(model: string): boolean {
+    const info = rateLimitInfo[model];
+    if (!info) return false;
+    return info.usage.rpm >= info.limits.rpm || info.usage.rpd >= info.limits.rpd;
+  }
 
   const autoSendDone = useRef(false);
   const [pendingAutoSend, setPendingAutoSend] = useState<string | null>(null);
@@ -592,6 +635,18 @@ export default function Chat({ initialSessionId }: { initialSessionId?: number |
       setSteps([...stepsRef.current]);
     });
     window.api.onChatReasoning((text) => {
+      // Check for model switch messages
+      if (text.includes('Switching to')) {
+        const s = stepsRef.current;
+        const last = s[s.length - 1];
+        if (last && last.type === "reasoning") {
+          last.text = text;
+        } else {
+          s.push({ type: "reasoning", text });
+        }
+        setSteps([...s]);
+        return;
+      }
       const s = stepsRef.current;
       const last = s[s.length - 1];
       if (last && last.type === "reasoning") {
@@ -862,6 +917,9 @@ export default function Chat({ initialSessionId }: { initialSessionId?: number |
     setStreaming(false);
     const finalContent = streamTextRef.current || result.fullText || "";
     const completedSteps = stepsRef.current;
+    
+    // Reload API info to update rate limits
+    loadApiInfo();
 
     setMessages((prev) => [
       ...prev,
@@ -1173,6 +1231,9 @@ export default function Chat({ initialSessionId }: { initialSessionId?: number |
                       ? "Start a new conversation..."
                       : "Message Soxial..."
                   }
+                  models={availableModels.length > 0 ? availableModels : ["Gemini 3.1 Flash Lite"]}
+                  modelSupportsEffort={(model) => model !== "Gemini 3.1 Pro"}
+                  disabled={streaming || rateLimitReached}
                   isStreaming={streaming}
                   onStop={handleStop}
                   queue={queuedMessages}
@@ -1184,6 +1245,8 @@ export default function Chat({ initialSessionId }: { initialSessionId?: number |
                   question={pendingQuestion || undefined}
                   onAnswer={handleAnswer}
                   onSubmit={(value, meta) => send(value, meta.model, meta.effort, meta.attachments)}
+                  rateLimitInfo={rateLimitInfo}
+                  rateLimitReached={rateLimitReached}
                 />
               </div>
             </div>

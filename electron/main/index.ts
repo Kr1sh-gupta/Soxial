@@ -3,10 +3,11 @@ import { join } from 'path'
 import { readFileSync, existsSync } from 'fs'
 import { config } from 'dotenv'
 config()
-import { getDb, getProfile, updateProfile, queryAll, insertRow, createChatSession, getChatSessions, getChatMessages, addChatMessage, updateChatSessionTitle, getChatSessionContextSummary, updateChatSessionContextSummary, deleteChatSession, getQuickActions, setQuickActions, getQuickActionsContext } from './db'
+import { getDb, getProfile, updateProfile, queryAll, insertRow, createChatSession, getChatSessions, getChatMessages, addChatMessage, updateChatSessionTitle, getChatSessionContextSummary, updateChatSessionContextSummary, deleteChatSession, getQuickActions, setQuickActions, getQuickActionsContext, getApiTier, setApiTier, getAvailableModels, getDefaultModel, getModelUsage, getModelRateLimit } from './db'
 import { ensureCliInstalled, ensureRdtAuth, ensureTwitterAuth, checkCli, checkCliAuth, runCli } from './cli'
 import { gatherOnboardingSocialData } from './social-content'
-import { runAgent, generateText, ONBOARDING_SYSTEM_PROMPT, createOnboardingTools, installOnboardingAnswerListener, clearPendingQuestions, createChatTools, installChatAnswerListener, clearPendingChatQuestions } from './agent'
+import { runAgent, generateText, ONBOARDING_SYSTEM_PROMPT, createOnboardingTools, installOnboardingAnswerListener, clearPendingQuestions, createChatTools, installChatAnswerListener, clearPendingChatQuestions, ONBOARDING_MODEL_FALLBACK, CHAT_MODEL_FALLBACK_PRO, CHAT_MODEL_FALLBACK_FREE } from './agent'
+import { detectApiTier } from './api-tier'
 import { logger } from './log'
 
 type Message = { role: string; content: string | null; parts?: any[]; tool_call_id?: string; tool_calls?: any[]; attachments_json?: string | null }
@@ -224,7 +225,7 @@ function setupIpc() {
     return runCli('rdt', args)
   })
 
-  ipcMain.handle('onboarding:run', async (_e, profileData: Record<string, any>) => {
+  ipcMain.handle('onboarding:run', async (_e, profileData: Record<string, any>, continueFromMessages?: any[]) => {
     logger.info('main', 'onboarding:run started', Object.keys(profileData))
     updateProfile(profileData)
     const profile = getProfile()
@@ -236,99 +237,145 @@ function setupIpc() {
     const sendQuestions = (payload: { batchId: string; questions: { id: string; text: string; type: 'single' | 'multi' | 'text'; options?: string[] }[] }) =>
       mainWindow?.webContents.send('onboarding:question', payload)
 
-    // ─── Phase 1: Auto-gather data ───────────────────────────────────────────
-    // Allow UI to render before starting heavy work
-    await new Promise(resolve => setTimeout(resolve, 10))
-    sendChunk('PHASE:gather')
-    
-    // Install CLIs and send tool calls immediately
-    sendToolCall('install_twitter_cli', {})
-    sendToolCall('install_rdt_cli', {})
-    
-    // Install CLIs and wait for completion
-    let rdtAuthResult: Awaited<ReturnType<typeof ensureRdtAuth>> | undefined
-    let twitterAuthResult: Awaited<ReturnType<typeof ensureTwitterAuth>> | undefined
+    // ─── Phase 0: Detect API tier (silent background) ───────────────────────
     try {
-      await Promise.all([ensureCliInstalled('twitter'), ensureCliInstalled('rdt')])
-      sendToolResult('install_twitter_cli', { ok: true })
-      sendToolResult('install_rdt_cli', { ok: true })
-
-      if (profile?.twitter_handle) {
-        sendToolCall('twitter_status', {})
-        twitterAuthResult = await ensureTwitterAuth()
-        sendToolResult('twitter_status', twitterAuthResult)
-      }
-
-      if (profile?.reddit_username) {
-        sendToolCall('rdt_login', {})
-        rdtAuthResult = await ensureRdtAuth()
-        sendToolResult('rdt_login', rdtAuthResult)
-      }
+      const tier = await detectApiTier()
+      logger.info('main', `detected API tier: ${tier}`)
     } catch (err) {
-      logger.error('main', 'CLI installation failed', err)
-      sendToolResult('install_twitter_cli', { ok: false, error: (err as Error).message })
-      sendToolResult('install_rdt_cli', { ok: false, error: (err as Error).message })
+      logger.warn('main', `tier detection failed, assuming free tier: ${(err as Error).message}`)
+      setApiTier('free')
     }
 
-    const profileSafe = (({ zai_api_key, gemini_api_key, openai_api_key, puter_token, ...rest }) => rest)(profile || {})
-    const gathered: Record<string, any> = { profile: profileSafe }
+    // ─── Phase 1: Auto-gather data (skip if continuing from previous attempt) ───────
+    if (!continueFromMessages || continueFromMessages.length === 0) {
+      // Allow UI to render before starting heavy work
+      await new Promise(resolve => setTimeout(resolve, 10))
+      sendChunk('PHASE:gather')
+      
+      // Install CLIs and send tool calls immediately
+      sendToolCall('install_twitter_cli', {})
+      sendToolCall('install_rdt_cli', {})
+      
+      // Install CLIs and wait for completion
+      let rdtAuthResult: Awaited<ReturnType<typeof ensureRdtAuth>> | undefined
+      let twitterAuthResult: Awaited<ReturnType<typeof ensureTwitterAuth>> | undefined
+      try {
+        await Promise.all([ensureCliInstalled('twitter'), ensureCliInstalled('rdt')])
+        sendToolResult('install_twitter_cli', { ok: true })
+        sendToolResult('install_rdt_cli', { ok: true })
 
-    if (rdtAuthResult) gathered.rdt_login = rdtAuthResult
-    if (twitterAuthResult) gathered.twitter_status = twitterAuthResult
+        if (profile?.twitter_handle) {
+          sendToolCall('twitter_status', {})
+          twitterAuthResult = await ensureTwitterAuth()
+          sendToolResult('twitter_status', twitterAuthResult)
+        }
 
-    const socialData = await gatherOnboardingSocialData(profile || {}, {
-      onToolCall: sendToolCall,
-      onToolResult: sendToolResult,
-    })
-    Object.assign(gathered, socialData)
+        if (profile?.reddit_username) {
+          sendToolCall('rdt_login', {})
+          rdtAuthResult = await ensureRdtAuth()
+          sendToolResult('rdt_login', rdtAuthResult)
+        }
+      } catch (err) {
+        logger.error('main', 'CLI installation failed', err)
+        sendToolResult('install_twitter_cli', { ok: false, error: (err as Error).message })
+        sendToolResult('install_rdt_cli', { ok: false, error: (err as Error).message })
+      }
 
-    const db = getDb()
-    gathered.algorithm_rules = db.prepare('SELECT * FROM algorithm_rules').all()
-    gathered.voice_rules = db.prepare('SELECT * FROM voice_rules').all()
-    gathered.hooks = db.prepare('SELECT * FROM hooks ORDER BY rank ASC').all()
-    gathered.content_pillars = db.prepare('SELECT * FROM content_pillars').all()
+      const profileSafe = (({ zai_api_key, gemini_api_key, openai_api_key, puter_token, ...rest }) => rest)(profile || {})
+      const gathered: Record<string, any> = { profile: profileSafe }
 
-    // ─── Phase 2: Interactive AI onboarding ──────────────────────────────────
-    sendChunk('PHASE:interview')
+      if (rdtAuthResult) gathered.rdt_login = rdtAuthResult
+      if (twitterAuthResult) gathered.twitter_status = twitterAuthResult
 
-    const compacted = compactGatheredData(gathered)
-    const snippets: string[] = ['=== AUTO-GATHERED DATA ===\nAnalyze this data, then ask ALL your interview questions in a single ask_user_questions tool call.\n']
-    for (const [key, val] of Object.entries(compacted)) {
-      snippets.push(`--- ${key} ---\n${JSON.stringify(val, null, 2)}`)
+      const socialData = await gatherOnboardingSocialData(profile || {}, {
+        onToolCall: sendToolCall,
+        onToolResult: sendToolResult,
+      })
+      Object.assign(gathered, socialData)
+
+      const db = getDb()
+      gathered.algorithm_rules = db.prepare('SELECT * FROM algorithm_rules').all()
+      gathered.voice_rules = db.prepare('SELECT * FROM voice_rules').all()
+      gathered.hooks = db.prepare('SELECT * FROM hooks ORDER BY rank ASC').all()
+      gathered.content_pillars = db.prepare('SELECT * FROM content_pillars').all()
+
+      // ─── Phase 2: Interactive AI onboarding ──────────────────────────────────
+      sendChunk('PHASE:interview')
+
+      const compacted = compactGatheredData(gathered)
+      const snippets: string[] = ['=== AUTO-GATHERED DATA ===\nAnalyze this data, then ask ALL your interview questions in a single ask_user_questions tool call.\n']
+      for (const [key, val] of Object.entries(compacted)) {
+        snippets.push(`--- ${key} ---\n${JSON.stringify(val, null, 2)}`)
+      }
+      snippets.push(`\nIMPORTANT: The user already told you their name is "${profile?.name || 'unknown'}", X handle is "${profile?.twitter_handle || 'not set'}", Reddit is "u/${profile?.reddit_username || 'not set'}". DO NOT re-ask these. Call ask_user_questions ONCE with all questions you genuinely need, then build their full strategy profile using bulk save tools.`)
+
+      const onboardingTools = createOnboardingTools(sendQuestions)
+      const messages: { role: string; content: string | null; tool_call_id?: string; tool_calls?: any[] }[] = [
+        { role: 'user', content: snippets.join('\n\n') }
+      ]
+
+      const msgSize = snippets.join('\n\n').length
+      logger.info('main', `starting interactive onboarding agent (message size: ${(msgSize / 1024).toFixed(1)}KB)`)
+      const result = await new Promise<{ text: string; error?: string }>((resolve) => {
+        runAgent(
+          messages,
+          (chunk) => sendChunk(chunk),
+          (name, args) => sendToolCall(name, args),
+          (name, result) => sendToolResult(name, result),
+          (text) => resolve({ text }),
+          (error) => resolve({ text: '', error }),
+          (text) => mainWindow?.webContents.send('onboarding:reasoning', text),
+          { maxSteps: 60, fallbackChain: ONBOARDING_MODEL_FALLBACK, onModelSwitch: (model, index, total) => {
+            sendChunk(`Switching to ${model} (${index}/${total})...`)
+          }},
+          onboardingTools,
+          ONBOARDING_SYSTEM_PROMPT
+        )
+      })
+
+      if (result.error) {
+        logger.error('main', `onboarding failed: ${result.error}`)
+        return { success: false, error: result.error }
+      }
+
+      logger.info('main', `onboarding complete (${result.text.length} chars)`)
+      updateProfile({ onboarding_complete: 1 })
+      generateQuickActions().catch(() => {})
+      return { success: true, summary: result.text }
+    } else {
+      // Continue from previous attempt - skip data gathering, go straight to AI
+      logger.info('main', `continuing onboarding from ${continueFromMessages.length} messages`)
+      sendChunk('PHASE:interview')
+
+      const onboardingTools = createOnboardingTools(sendQuestions)
+      
+      const result = await new Promise<{ text: string; error?: string }>((resolve) => {
+        runAgent(
+          continueFromMessages,
+          (chunk) => sendChunk(chunk),
+          (name, args) => sendToolCall(name, args),
+          (name, result) => sendToolResult(name, result),
+          (text) => resolve({ text }),
+          (error) => resolve({ text: '', error }),
+          (text) => mainWindow?.webContents.send('onboarding:reasoning', text),
+          { maxSteps: 60, fallbackChain: ONBOARDING_MODEL_FALLBACK, onModelSwitch: (model, index, total) => {
+            sendChunk(`Switching to ${model} (${index}/${total})...`)
+          }},
+          onboardingTools,
+          ONBOARDING_SYSTEM_PROMPT
+        )
+      })
+
+      if (result.error) {
+        logger.error('main', `onboarding continuation failed: ${result.error}`)
+        return { success: false, error: result.error }
+      }
+
+      logger.info('main', `onboarding continuation complete (${result.text.length} chars)`)
+      updateProfile({ onboarding_complete: 1 })
+      generateQuickActions().catch(() => {})
+      return { success: true, summary: result.text }
     }
-    snippets.push(`\nIMPORTANT: The user already told you their name is "${profile?.name || 'unknown'}", X handle is "${profile?.twitter_handle || 'not set'}", Reddit is "u/${profile?.reddit_username || 'not set'}". DO NOT re-ask these. Call ask_user_questions ONCE with all questions you genuinely need, then build their full strategy profile using bulk save tools.`)
-
-    const onboardingTools = createOnboardingTools(sendQuestions)
-    const messages: { role: string; content: string | null; tool_call_id?: string; tool_calls?: any[] }[] = [
-      { role: 'user', content: snippets.join('\n\n') }
-    ]
-
-    const msgSize = snippets.join('\n\n').length
-    logger.info('main', `starting interactive onboarding agent (message size: ${(msgSize / 1024).toFixed(1)}KB)`)
-    const result = await new Promise<{ text: string; error?: string }>((resolve) => {
-      runAgent(
-        messages,
-        (chunk) => sendChunk(chunk),
-        (name, args) => sendToolCall(name, args),
-        (name, result) => sendToolResult(name, result),
-        (text) => resolve({ text }),
-        (error) => resolve({ text: '', error }),
-        (text) => mainWindow?.webContents.send('onboarding:reasoning', text),
-        { maxSteps: 60 },
-        onboardingTools,
-        ONBOARDING_SYSTEM_PROMPT
-      )
-    })
-
-    if (result.error) {
-      logger.error('main', `onboarding failed: ${result.error}`)
-      return { success: false, error: result.error }
-    }
-
-    logger.info('main', `onboarding complete (${result.text.length} chars)`)
-    updateProfile({ onboarding_complete: 1 })
-    generateQuickActions().catch(() => {})
-    return { success: true, summary: result.text }
   })
 
 
@@ -336,6 +383,25 @@ function setupIpc() {
     logger.info('main', 'onboarding:reset')
     updateProfile({ onboarding_complete: 0 })
     return { success: true }
+  })
+
+  ipcMain.handle('api:getTier', () => {
+    return getApiTier()
+  })
+
+  ipcMain.handle('api:getAvailableModels', () => {
+    return getAvailableModels()
+  })
+
+  ipcMain.handle('api:getDefaultModel', () => {
+    return getDefaultModel()
+  })
+
+  ipcMain.handle('api:getModelUsage', (_e, model: string) => {
+    const usage = getModelUsage(model)
+    const tier = getApiTier().tier
+    const limits = getModelRateLimit(model, tier)
+    return { usage, limits }
   })
 
   ipcMain.handle('onboarding:saveConversation', async (_e, messages: { role: string; content: string; steps?: any[] }[]) => {
@@ -363,6 +429,10 @@ function setupIpc() {
       mainWindow?.webContents.send('chat:question', q)
     const chatTools = createChatTools(sendChatQuestion)
 
+    // Determine fallback chain based on API tier
+    const tier = getApiTier().tier
+    const fallbackChain = tier === 'pro' ? CHAT_MODEL_FALLBACK_PRO : CHAT_MODEL_FALLBACK_FREE
+
     await new Promise<void>((resolve) => {
       runAgent(
         messages,
@@ -378,7 +448,13 @@ function setupIpc() {
           resolve()
         },
         (text) => mainWindow?.webContents.send('chat:reasoning', text),
-        options,
+        {
+          ...options,
+          fallbackChain,
+          onModelSwitch: (model, index, total) => {
+            mainWindow?.webContents.send('chat:reasoning', `Switching to ${model} (${index}/${total})...`)
+          }
+        },
         chatTools,
         undefined,
         chatAbortController ?? undefined,

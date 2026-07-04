@@ -1,7 +1,7 @@
 {
   "name": "soxial",
   "productName": "Soxial",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Soxial is an AI-powered social media manager for X and Reddit.",
   "main": "./out/main/index.js",
   "author": "Hossain Jahed <rabden@users.noreply.github.com>",

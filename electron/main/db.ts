@@ -188,6 +188,25 @@ function initSchema(db: Database.Database) {
 
     CREATE INDEX IF NOT EXISTS idx_social_content_platform_type
       ON social_content(platform, content_type, posted_at DESC);
+
+    CREATE TABLE IF NOT EXISTS api_tier_info (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      tier TEXT DEFAULT 'free',
+      detected_at TEXT DEFAULT (datetime('now')),
+      last_verified_at TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS rate_limit_tracking (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      model TEXT NOT NULL,
+      request_count INTEGER DEFAULT 0,
+      window_start TEXT NOT NULL,
+      window_type TEXT NOT NULL,
+      created_at TEXT DEFAULT (datetime('now'))
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_rate_limit_model_window
+      ON rate_limit_tracking(model, window_type, window_start);
   `)
 
   // Migration: add context_summary if missing
@@ -453,4 +472,116 @@ export function countSocialContent(options?: { platform?: string; content_type?:
   if (options?.content_type) { sql += ' AND content_type = ?'; params.push(options.content_type) }
   sql += ' GROUP BY platform, content_type ORDER BY platform, content_type'
   return getDb().prepare(sql).all(...params)
+}
+
+// API Tier Management
+export function getApiTier(): { tier: string; detected_at: string; last_verified_at?: string } {
+  const db = getDb()
+  const row = db.prepare('SELECT * FROM api_tier_info WHERE id = 1').get() as any
+  if (!row) {
+    db.prepare('INSERT INTO api_tier_info (id, tier) VALUES (1, ?)').run('free')
+    return { tier: 'free', detected_at: new Date().toISOString() }
+  }
+  return row
+}
+
+export function setApiTier(tier: 'free' | 'pro') {
+  const db = getDb()
+  db.prepare('UPDATE api_tier_info SET tier = ?, last_verified_at = datetime(\'now\') WHERE id = 1').run(tier)
+  return getApiTier()
+}
+
+// Rate Limit Tracking
+interface RateLimitConfig {
+  rpm: number
+  rpd: number
+}
+
+const MODEL_RATE_LIMITS: Record<string, { free: RateLimitConfig; pro: RateLimitConfig }> = {
+  'gemini-3.5-flash': {
+    free: { rpm: 5, rpd: 20 },
+    pro: { rpm: 1000, rpd: 10000 }
+  },
+  'gemini-3.1-pro': {
+    free: { rpm: 0, rpd: 0 },
+    pro: { rpm: 25, rpd: 250 }
+  },
+  'gemini-3.1-flash-lite': {
+    free: { rpm: 15, rpd: 500 },
+    pro: { rpm: 4000, rpd: 150000 }
+  }
+}
+
+export function getModelRateLimit(model: string, tier?: string): RateLimitConfig {
+  const actualTier = tier || getApiTier().tier
+  const config = MODEL_RATE_LIMITS[model]
+  if (!config) return { rpm: 0, rpd: 0 }
+  return config[actualTier as keyof typeof config] || { rpm: 0, rpd: 0 }
+}
+
+export function trackModelRequest(model: string) {
+  const db = getDb()
+  const now = new Date()
+  const minuteWindow = new Date(now.getFullYear(), now.getMonth(), now.getDate(), now.getHours(), now.getMinutes(), 0, 0).toISOString()
+  const dayWindow = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0).toISOString()
+
+  // Track per-minute requests
+  const existingMinute = db.prepare('SELECT * FROM rate_limit_tracking WHERE model = ? AND window_type = ? AND window_start = ?')
+    .get(model, 'minute', minuteWindow) as any
+  if (existingMinute) {
+    db.prepare('UPDATE rate_limit_tracking SET request_count = request_count + 1 WHERE id = ?').run(existingMinute.id)
+  } else {
+    db.prepare('INSERT INTO rate_limit_tracking (model, request_count, window_start, window_type) VALUES (?, 1, ?, ?)')
+      .run(model, minuteWindow, 'minute')
+  }
+
+  // Track per-day requests
+  const existingDay = db.prepare('SELECT * FROM rate_limit_tracking WHERE model = ? AND window_type = ? AND window_start = ?')
+    .get(model, 'day', dayWindow) as any
+  if (existingDay) {
+    db.prepare('UPDATE rate_limit_tracking SET request_count = request_count + 1 WHERE id = ?').run(existingDay.id)
+  } else {
+    db.prepare('INSERT INTO rate_limit_tracking (model, request_count, window_start, window_type) VALUES (?, 1, ?, ?)')
+      .run(model, dayWindow, 'day')
+  }
+
+  // Clean old records (older than 2 days)
+  db.prepare('DELETE FROM rate_limit_tracking WHERE datetime(window_start) < datetime(\'now\', \'-2 days\')').run()
+}
+
+export function getModelUsage(model: string): { rpm: number; rpd: number } {
+  const db = getDb()
+  const now = new Date()
+  const minuteWindow = new Date(now.getFullYear(), now.getMonth(), now.getDate(), now.getHours(), now.getMinutes(), 0, 0).toISOString()
+  const dayWindow = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0).toISOString()
+
+  const minuteRow = db.prepare('SELECT request_count FROM rate_limit_tracking WHERE model = ? AND window_type = ? AND window_start = ?')
+    .get(model, 'minute', minuteWindow) as any
+  const dayRow = db.prepare('SELECT request_count FROM rate_limit_tracking WHERE model = ? AND window_type = ? AND window_start = ?')
+    .get(model, 'day', dayWindow) as any
+
+  return {
+    rpm: minuteRow?.request_count || 0,
+    rpd: dayRow?.request_count || 0
+  }
+}
+
+export function isModelRateLimited(model: string, tier?: string): boolean {
+  const usage = getModelUsage(model)
+  const limits = getModelRateLimit(model, tier)
+  return usage.rpm >= limits.rpm || usage.rpd >= limits.rpd
+}
+
+export function getAvailableModels(tier?: string): string[] {
+  const actualTier = tier || getApiTier().tier
+  if (actualTier === 'pro') {
+    return ['gemini-3.5-flash', 'gemini-3.1-pro', 'gemini-3.1-flash-lite']
+  } else {
+    return ['gemini-3.1-flash-lite', 'gemini-3.5-flash']
+  }
+}
+
+export function getDefaultModel(tier?: string): string {
+  const actualTier = tier || getApiTier().tier
+  return actualTier === 'pro' ? 'gemini-3.5-flash' : 'gemini-3.1-flash-lite'
 }

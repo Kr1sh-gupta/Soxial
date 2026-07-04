@@ -12,7 +12,7 @@ const api = {
   twitterTweet: (tweetId: string, max?: number) => ipcRenderer.invoke('cli:twitterTweet', tweetId, max),
   redditRead: (postId: string, maxComments?: number) => ipcRenderer.invoke('cli:redditRead', postId, maxComments),
 
-  runOnboarding: (profileData: Record<string, any>) => ipcRenderer.invoke('onboarding:run', profileData),
+  runOnboarding: (profileData: Record<string, any>, continueFromMessages?: any[]) => ipcRenderer.invoke('onboarding:run', profileData, continueFromMessages),
   resetOnboarding: () => ipcRenderer.invoke('onboarding:reset'),
   onOnboardingChunk: (cb: (text: string) => void) => ipcRenderer.on('onboarding:chunk', (_e, text) => cb(text)),
   onOnboardingToolCall: (cb: (data: { name: string, args: any }) => void) => ipcRenderer.on('onboarding:toolCall', (_e, data) => cb(data)),
@@ -48,6 +48,11 @@ const api = {
   onChatError: (cb: (error: string) => void) => ipcRenderer.on('chat:error', (_e, error) => cb(error)),
   onChatReasoning: (cb: (text: string) => void) => ipcRenderer.on('chat:reasoning', (_e, text) => cb(text)),
   onChatInjected: (cb: (messages: { role: string; content: string | null; attachments?: { name: string; mimeType: string; data: string }[] }[]) => void) => ipcRenderer.on('chat:injected', (_e, messages) => cb(messages)),
+
+  getTier: () => ipcRenderer.invoke('api:getTier'),
+  getAvailableModels: () => ipcRenderer.invoke('api:getAvailableModels'),
+  getDefaultModel: () => ipcRenderer.invoke('api:getDefaultModel'),
+  getModelUsage: (model: string) => ipcRenderer.invoke('api:getModelUsage', model),
 
   removeAllListeners: (channel: string) => ipcRenderer.removeAllListeners(channel),
 }

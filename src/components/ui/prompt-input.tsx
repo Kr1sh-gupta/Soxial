@@ -155,6 +155,8 @@ export interface PromptInputProps {
     options?: string[];
   };
   onAnswer?: (answer: string | string[]) => void;
+  rateLimitInfo?: Record<string, { usage: { rpm: number; rpd: number }; limits: { rpm: number; rpd: number } }>;
+  rateLimitReached?: boolean;
 }
 
 export const PromptInput = React.forwardRef<HTMLDivElement, PromptInputProps>(
@@ -172,6 +174,8 @@ export const PromptInput = React.forwardRef<HTMLDivElement, PromptInputProps>(
     onRemoveQueued,
     question,
     onAnswer,
+    rateLimitInfo,
+    rateLimitReached,
   }) => {
     const [expanded, setExpanded] = useState(false);
     const [isSmooth, setIsSmooth] = useState(false);
@@ -202,6 +206,18 @@ export const PromptInput = React.forwardRef<HTMLDivElement, PromptInputProps>(
 
     const showEffort = modelSupportsEffort(selectedModel);
     const hasValue = value.trim() !== "" || attachments.length > 0;
+
+    // Check if current model is rate limited
+    const isRateLimited = rateLimitInfo && rateLimitInfo[selectedModel] && 
+      (rateLimitInfo[selectedModel].usage.rpm >= rateLimitInfo[selectedModel].limits.rpm ||
+       rateLimitInfo[selectedModel].usage.rpd >= rateLimitInfo[selectedModel].limits.rpd);
+
+    // Find the first non-rate-limited model
+    const availableModel = models.find(m => {
+      const info = rateLimitInfo?.[m];
+      if (!info) return true;
+      return info.usage.rpm < info.limits.rpm && info.usage.rpd < info.limits.rpd;
+    }) || models[0];
 
     const updateFades = () => {
       const el = textareaRef.current;
@@ -240,6 +256,16 @@ export const PromptInput = React.forwardRef<HTMLDivElement, PromptInputProps>(
       if (!qHasAnswer || !onAnswer) return;
       onAnswer(qAnswer);
       setQAnswer("");
+    };
+
+    // Format rate limit info for display
+    const getRateLimitText = (model: string) => {
+      const info = rateLimitInfo?.[model];
+      if (!info) return null;
+      const { usage, limits } = info;
+      const rpmPercent = Math.round((usage.rpm / limits.rpm) * 100);
+      const rpdPercent = Math.round((usage.rpd / limits.rpd) * 100);
+      return `${rpmPercent}% RPM / ${rpdPercent}% RPD`;
     };
 
     const expand = () => {
@@ -338,6 +364,15 @@ export const PromptInput = React.forwardRef<HTMLDivElement, PromptInputProps>(
 
     const handleSubmit = () => {
       if (value.trim() === "" && attachments.length === 0) return;
+      if (isRateLimited && availableModel !== selectedModel) {
+        // Auto-switch to available model
+        setSelectedModel(availableModel);
+        return;
+      }
+      if (isRateLimited) {
+        // All models are rate limited
+        return;
+      }
       setIsSmooth(false);
       onSubmit?.(value, {
         model: selectedModel,
@@ -541,6 +576,24 @@ export const PromptInput = React.forwardRef<HTMLDivElement, PromptInputProps>(
             ))}
           </div>
         </div>
+
+        {/* Rate limit warning */}
+        {rateLimitReached && (
+          <div
+            className="w-full relative z-0 overflow-hidden animate-in fade-in slide-in-from-top-3 duration-300"
+            style={{
+              height: 40,
+            }}
+          >
+            <div className="absolute bottom-0 left-0 right-0 bg-red-500/10 border border-red-500/20 rounded-t-2xl px-3 py-2 flex items-center gap-2">
+              <div className="flex-1">
+                <p className="text-[11px] text-red-500 font-medium">
+                  API rate limit reached. Please try again later or upgrade your API tier.
+                </p>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Main card */}
         <div
