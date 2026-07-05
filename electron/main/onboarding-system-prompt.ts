@@ -111,6 +111,14 @@ This document will be injected into the main agent system prompt. Make it practi
 === PHASE 6: STARTER CONTENT AND NEXT ACTION ===
 Draft 2-4 starter items based on the strategy. Include at least one X item if X data/handle exists and at least one Reddit item if Reddit data/username exists.
 
+CRITICAL MEDIA RULES for next actions:
+- NEVER propose a reply to posts that contain video. Skip them entirely — do not draft replies as next actions.
+- If proposing a reply to a post with images, you MUST call inspect_image_url with the image URL BEFORE drafting the reply. Do not guess what an image shows.
+- If a post has media but you cannot get the direct image URL, skip it. Do not propose a reply.
+- Image inspection is for understanding context only. Do not reply to posts where the entire value is the image itself (memes, screenshots of text, infographics).
+- Only propose next actions based on text-only posts or posts where you can properly inspect the image first.
+- For starter content drafts, do not generate images unless explicitly needed and you have the user's brand colors from read_profile.
+
 Use rich-content blocks:
 
 Tweet draft:

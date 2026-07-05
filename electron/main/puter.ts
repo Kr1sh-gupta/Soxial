@@ -1,5 +1,4 @@
-import { generateText } from 'ai'
-import { createGoogleGenerativeAI } from '@ai-sdk/google'
+import { GoogleGenAI } from '@google/genai'
 import { init, getAuthToken } from '@heyputer/puter.js/src/init.cjs'
 import { getProfile, updateProfile } from './db'
 import { join } from 'path'
@@ -54,35 +53,44 @@ function getApiKey(): string {
 
 async function generateGeminiImage(prompt: string, filename: string): Promise<string> {
   const apiKey = getApiKey()
-  const google = createGoogleGenerativeAI({ apiKey })
+  const ai = new GoogleGenAI({ apiKey })
 
   logger.info('gemini-image', `generating: "${prompt.slice(0, 80)}" -> ${filename}`)
 
-  const result = await generateText({
-    model: google('gemini-3.1-flash-lite-image'),
-    prompt,
-    providerOptions: {
-      google: {
-        responseModalities: ['IMAGE', 'TEXT'],
-      },
-    },
-  })
+  const interaction = await ai.interactions.create({
+    model: 'gemini-3.1-flash-lite-image',
+    store: false,
+    input: [{ type: 'user_input', content: [{ type: 'text', text: prompt }] }],
+  } as any)
 
-  for (const file of result.files || []) {
-    if (file.mediaType?.startsWith('image/')) {
-      const base64 = file.base64?.includes(',') ? file.base64.split(',')[1] : file.base64
-      if (!base64) continue
-      const buffer = Buffer.from(base64, 'base64')
-      const mediaDir = join(app.getPath('userData'), 'media')
-      mkdirSync(mediaDir, { recursive: true })
-      const outputPath = join(mediaDir, filename)
-      writeFileSync(outputPath, buffer)
-      logger.info('gemini-image', `saved to ${outputPath} (${buffer.length} bytes)`)
-      return outputPath
+  // The SDK exposes the last generated image via output_image.
+  const out = (interaction as any).output_image
+  const data = out?.data
+  if (!data) {
+    // Fall back to scanning steps for an image content block.
+    for (const s of (interaction as any).steps || []) {
+      for (const c of s?.content || []) {
+        if (c?.type === 'image' && c.data) {
+          const buffer = Buffer.from(c.data, 'base64')
+          return saveImage(buffer, filename)
+        }
+      }
     }
+    throw new Error('Gemini image generation returned no image')
   }
 
-  throw new Error('Gemini image generation returned no image')
+  const base64 = data.includes(',') ? data.split(',')[1] : data
+  const buffer = Buffer.from(base64, 'base64')
+  logger.info('gemini-image', `saved to ${filename} (${buffer.length} bytes)`)
+  return saveImage(buffer, filename)
+}
+
+function saveImage(buffer: Buffer, filename: string): string {
+  const mediaDir = join(app.getPath('userData'), 'media')
+  mkdirSync(mediaDir, { recursive: true })
+  const outputPath = join(mediaDir, filename)
+  writeFileSync(outputPath, buffer)
+  return outputPath
 }
 
 async function generatePuterImage(prompt: string, filename: string, model?: string): Promise<string> {
@@ -118,13 +126,9 @@ async function generatePuterImage(prompt: string, filename: string, model?: stri
   if (!base64) throw new Error('Invalid data URL from Puter.js')
 
   const buffer = Buffer.from(base64, 'base64')
-  const mediaDir = join(app.getPath('userData'), 'media')
-  mkdirSync(mediaDir, { recursive: true })
-  const outputPath = join(mediaDir, filename)
-  writeFileSync(outputPath, buffer)
-
-  logger.info('puter', `saved to ${outputPath} (${buffer.length} bytes)`)
-  return outputPath
+  const path = saveImage(buffer, filename)
+  logger.info('puter', `saved to ${path} (${buffer.length} bytes)`)
+  return path
 }
 
 /** Generate an image with Gemini by default, falling back to Puter.js if Gemini fails. */

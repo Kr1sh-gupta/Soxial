@@ -3,7 +3,7 @@ import { join } from 'path'
 import { readFileSync, existsSync } from 'fs'
 import { config } from 'dotenv'
 config()
-import { getDb, getProfile, updateProfile, queryAll, insertRow, createChatSession, getChatSessions, getChatMessages, addChatMessage, updateChatSessionTitle, getChatSessionContextSummary, updateChatSessionContextSummary, deleteChatSession, getQuickActions, setQuickActions, getQuickActionsContext, getApiTier, setApiTier, getAvailableModels, getDefaultModel, getModelUsage, getModelRateLimit } from './db'
+import { getDb, getProfile, updateProfile, queryAll, insertRow, createChatSession, getChatSessions, getChatMessages, addChatMessage, updateChatSessionTitle, getChatSessionContextSummary, updateChatSessionContextSummary, deleteChatSession, getQuickActions, setQuickActions, getQuickActionsContext, getApiTier, setApiTier, getAvailableModels, getDefaultModel, getApiKeys, addApiKey, removeApiKey, getModelExhaustionStatus } from './db'
 import { ensureCliInstalled, ensureRdtAuth, ensureTwitterAuth, checkCli, checkCliAuth, runCli } from './cli'
 import { gatherOnboardingSocialData } from './social-content'
 import { runAgent, generateText, ONBOARDING_SYSTEM_PROMPT, createOnboardingTools, installOnboardingAnswerListener, clearPendingQuestions, createChatTools, installChatAnswerListener, clearPendingChatQuestions, ONBOARDING_MODEL_FALLBACK, CHAT_MODEL_FALLBACK_PRO, CHAT_MODEL_FALLBACK_FREE } from './agent'
@@ -397,11 +397,24 @@ function setupIpc() {
     return getDefaultModel()
   })
 
-  ipcMain.handle('api:getModelUsage', (_e, model: string) => {
-    const usage = getModelUsage(model)
-    const tier = getApiTier().tier
-    const limits = getModelRateLimit(model, tier)
-    return { usage, limits }
+  ipcMain.handle('api:getApiKeys', () => {
+    return getApiKeys()
+  })
+
+  ipcMain.handle('api:addApiKey', (_e, name: string, apiKey: string) => {
+    return addApiKey(name, apiKey)
+  })
+
+  ipcMain.handle('api:removeApiKey', (_e, id: number) => {
+    return removeApiKey(id)
+  })
+
+  ipcMain.handle('api:getModelExhaustionStatus', (_e, model: string) => {
+    return getModelExhaustionStatus(model)
+  })
+
+  ipcMain.handle('api:detectTier', async () => {
+    return await detectApiTier()
   })
 
   ipcMain.handle('onboarding:saveConversation', async (_e, messages: { role: string; content: string; steps?: any[] }[]) => {
@@ -417,8 +430,8 @@ function setupIpc() {
   let chatAbortController: AbortController | null = null
   let chatInjectedMessages: Message[] = []
 
-  ipcMain.handle('chat:send', async (_e, messages: Message[], options?: { model?: string; effort?: string }) => {
-    logger.info('main', `chat:send — ${messages.length} messages`, options)
+  ipcMain.handle('chat:send', async (_e, messages: Message[], options?: { model?: string; effort?: string }, sessionId?: number) => {
+    logger.info('main', `chat:send — ${messages.length} messages (session ${sessionId ?? 'none'})`, options)
 
     chatAbortController = new AbortController()
     chatInjectedMessages = []
@@ -466,7 +479,8 @@ function setupIpc() {
         (injected) => {
           chunks.length = 0
           mainWindow?.webContents.send('chat:injected', injected)
-        }
+        },
+        sessionId,
       )
     })
 

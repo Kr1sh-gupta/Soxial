@@ -18,8 +18,8 @@ interface Window {
     onOnboardingQuestion: (cb: (payload: { batchId: string; questions: { id: string; text: string; type: 'single' | 'multi' | 'text'; options?: string[] }[] }) => void) => void
     sendOnboardingAnswer: (id: string, answers: { id: string; answer: string | string[] }[]) => void
     saveOnboardingConversation: (messages: { role: string; content: string; steps?: any[] }[]) => Promise<number>
-    chatSend: (messages: any[], options?: { model?: string; effort?: string }) => Promise<any>
-    chatInject: (content: string) => Promise<any>
+    chatSend: (messages: any[], options?: { model?: string; effort?: string }, sessionId?: number) => Promise<any>
+    chatInject: (content: string | { content: string; attachments?: { name: string; mimeType: string; data: string }[] }) => Promise<any>
     chatStop: () => Promise<any>
     onChatQuestion: (cb: (q: { id: string; text: string; type: 'single' | 'multi' | 'text'; options?: string[] }) => void) => void
     sendChatAnswer: (id: string, answer: string | string[]) => void
@@ -27,12 +27,12 @@ interface Window {
     getSessions: () => Promise<any[]>
     getMessages: (sessionId: number) => Promise<any[]>
     addMessage: (sessionId: number, role: string, content: string, reasoning?: string, toolCallsJson?: string, attachmentsJson?: string) => Promise<number>
-    updateSessionTitle: (sessionId: number, title: string) => Promise<void>
-    deleteSession: (sessionId: number) => Promise<void>
-    generateTitle: (sessionId: number, messages: { role: string; content: string }[]) => Promise<void>
-    generateSummary: (sessionId: number, messages: { role: string; content: string }[]) => Promise<void>
-    getSessionSummary: (sessionId: number) => Promise<string>
-    reTitle: (sessionId: number, messages: { role: string; content: string }[]) => Promise<void>
+    updateSessionTitle: (sessionId: number, title: string) => Promise<any>
+    deleteSession: (sessionId: number) => Promise<any>
+    generateTitle: (sessionId: number, messages: { role: string; content: string | null }[]) => Promise<any>
+    generateSummary: (sessionId: number, messages: { role: string; content: string | null }[]) => Promise<any>
+    getSessionSummary: (sessionId: number) => Promise<string | null>
+    reTitle: (sessionId: number, messages: { role: string; content: string | null }[]) => Promise<any>
     generateQuickActions: () => Promise<any>
     getMedia: (filename: string) => Promise<any>
     fetchLinkPreview: (url: string) => Promise<any>
@@ -41,11 +41,15 @@ interface Window {
     onChatToolResult: (cb: (data: { name: string; result: any }) => void) => void
     onChatError: (cb: (error: string) => void) => void
     onChatReasoning: (cb: (text: string) => void) => void
-    onChatInjected: (cb: (messages: { role: string; content: string | null; attachments?: { name: string; mimeType: string; data: string }[] }[]) => void
+    onChatInjected: (cb: (messages: { role: string; content: string | null; attachments?: { name: string; mimeType: string; data: string }[] }[]) => void) => void
     getTier: () => Promise<{ tier: string }>
     getAvailableModels: () => Promise<string[]>
     getDefaultModel: () => Promise<string>
-    getModelUsage: (model: string) => Promise<{ usage: { rpm: number; rpd: number }; limits: { rpm: number; rpd: number } }>
+    getApiKeys: () => Promise<Array<{ id: number; name: string; api_key: string; provider: string; tier: string; is_active: number; created_at: string; last_used_at: string | null }>>
+    addApiKey: (name: string, apiKey: string) => Promise<number>
+    removeApiKey: (id: number) => Promise<void>
+    getModelExhaustionStatus: (model: string) => Promise<{ exhausted: boolean; availableAt: string | null }>
+    detectApiTier: () => Promise<'free' | 'pro'>
     removeAllListeners: (channel: string) => void
   }
 }

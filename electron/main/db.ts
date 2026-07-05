@@ -196,17 +196,33 @@ function initSchema(db: Database.Database) {
       last_verified_at TEXT
     );
 
-    CREATE TABLE IF NOT EXISTS rate_limit_tracking (
+    CREATE TABLE IF NOT EXISTS api_keys (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
-      model TEXT NOT NULL,
-      request_count INTEGER DEFAULT 0,
-      window_start TEXT NOT NULL,
-      window_type TEXT NOT NULL,
-      created_at TEXT DEFAULT (datetime('now'))
+      name TEXT NOT NULL,
+      api_key TEXT NOT NULL,
+      provider TEXT DEFAULT 'google',
+      tier TEXT DEFAULT 'unknown',
+      is_active INTEGER DEFAULT 1,
+      created_at TEXT DEFAULT (datetime('now')),
+      last_used_at TEXT
     );
 
-    CREATE INDEX IF NOT EXISTS idx_rate_limit_model_window
-      ON rate_limit_tracking(model, window_type, window_start);
+    CREATE TABLE IF NOT EXISTS model_exhaustion (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      model TEXT NOT NULL,
+      api_key_id INTEGER,
+      exhausted_at TEXT NOT NULL,
+      available_at TEXT NOT NULL,
+      created_at TEXT DEFAULT (datetime('now')),
+      FOREIGN KEY (api_key_id) REFERENCES api_keys(id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_model_exhaustion_model
+      ON model_exhaustion(model);
+    CREATE INDEX IF NOT EXISTS idx_model_exhaustion_available
+      ON model_exhaustion(available_at);
+    CREATE INDEX IF NOT EXISTS idx_api_keys_active
+      ON api_keys(is_active);
   `)
 
   // Migration: add context_summary if missing
@@ -238,6 +254,59 @@ function initSchema(db: Database.Database) {
       db.exec(`ALTER TABLE user_profile ADD COLUMN ${col} TEXT`)
     }
   }
+
+  // Migration: make model_exhaustion.api_key_id nullable (NULL = primary/profile key)
+  const meCols = db.pragma('table_info(model_exhaustion)') as any[]
+  const apiKeyIdCol = meCols.find((c: any) => c.name === 'api_key_id')
+  if (apiKeyIdCol && apiKeyIdCol.notnull === 1) {
+    // Ephemeral data (5h cooldown) — safe to drop and recreate with nullable column
+    db.exec('DROP TABLE IF EXISTS model_exhaustion')
+    db.exec(`
+      CREATE TABLE model_exhaustion (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        model TEXT NOT NULL,
+        api_key_id INTEGER,
+        exhausted_at TEXT NOT NULL,
+        available_at TEXT NOT NULL,
+        created_at TEXT DEFAULT (datetime('now')),
+        FOREIGN KEY (api_key_id) REFERENCES api_keys(id) ON DELETE CASCADE
+      );
+      CREATE INDEX IF NOT EXISTS idx_model_exhaustion_model ON model_exhaustion(model);
+      CREATE INDEX IF NOT EXISTS idx_model_exhaustion_available ON model_exhaustion(available_at);
+    `)
+  }
+
+  // Migration: add tier column to api_keys if missing
+  const apiKeyCols = db.pragma('table_info(api_keys)') as any[]
+  if (!apiKeyCols.some((c: any) => c.name === 'tier')) {
+    db.exec('ALTER TABLE api_keys ADD COLUMN tier TEXT DEFAULT \'unknown\'')
+  }
+
+  // Migration: persist authoritative Interactions API steps per session.
+  // Stores verbatim server steps (thought signatures + function_call ids +
+  // function_result payloads) so multi-turn history round-trips correctly.
+  const sessionCols = db.pragma('table_info(chat_sessions)') as any[]
+  if (!sessionCols.some((c: any) => c.name === 'steps_json')) {
+    db.exec('ALTER TABLE chat_sessions ADD COLUMN steps_json TEXT')
+  }
+  if (!sessionCols.some((c: any) => c.name === 'steps_user_count')) {
+    db.exec('ALTER TABLE chat_sessions ADD COLUMN steps_user_count INTEGER DEFAULT 0')
+  }
+}
+
+export function getChatSessionSteps(sessionId: number): { steps: any[]; userCount: number } | null {
+  const row = getDb().prepare('SELECT steps_json, steps_user_count FROM chat_sessions WHERE id = ?').get(sessionId) as any
+  if (!row || !row.steps_json) return null
+  try {
+    return { steps: JSON.parse(row.steps_json), userCount: row.steps_user_count || 0 }
+  } catch {
+    return null
+  }
+}
+
+export function updateChatSessionSteps(sessionId: number, steps: any[], userCount: number) {
+  getDb().prepare('UPDATE chat_sessions SET steps_json = ?, steps_user_count = ?, updated_at = datetime(\'now\') WHERE id = ?')
+    .run(JSON.stringify(steps), userCount, sessionId)
 }
 
 export function getProfile() {
@@ -491,90 +560,16 @@ export function setApiTier(tier: 'free' | 'pro') {
   return getApiTier()
 }
 
-// Rate Limit Tracking
-interface RateLimitConfig {
-  rpm: number
-  rpd: number
-}
-
-const MODEL_RATE_LIMITS: Record<string, { free: RateLimitConfig; pro: RateLimitConfig }> = {
-  'gemini-3.5-flash': {
-    free: { rpm: 5, rpd: 20 },
-    pro: { rpm: 1000, rpd: 10000 }
-  },
-  'gemini-3.1-pro': {
-    free: { rpm: 0, rpd: 0 },
-    pro: { rpm: 25, rpd: 250 }
-  },
-  'gemini-3.1-flash-lite': {
-    free: { rpm: 15, rpd: 500 },
-    pro: { rpm: 4000, rpd: 150000 }
-  }
-}
-
-export function getModelRateLimit(model: string, tier?: string): RateLimitConfig {
-  const actualTier = tier || getApiTier().tier
-  const config = MODEL_RATE_LIMITS[model]
-  if (!config) return { rpm: 0, rpd: 0 }
-  return config[actualTier as keyof typeof config] || { rpm: 0, rpd: 0 }
-}
-
-export function trackModelRequest(model: string) {
-  const db = getDb()
-  const now = new Date()
-  const minuteWindow = new Date(now.getFullYear(), now.getMonth(), now.getDate(), now.getHours(), now.getMinutes(), 0, 0).toISOString()
-  const dayWindow = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0).toISOString()
-
-  // Track per-minute requests
-  const existingMinute = db.prepare('SELECT * FROM rate_limit_tracking WHERE model = ? AND window_type = ? AND window_start = ?')
-    .get(model, 'minute', minuteWindow) as any
-  if (existingMinute) {
-    db.prepare('UPDATE rate_limit_tracking SET request_count = request_count + 1 WHERE id = ?').run(existingMinute.id)
-  } else {
-    db.prepare('INSERT INTO rate_limit_tracking (model, request_count, window_start, window_type) VALUES (?, 1, ?, ?)')
-      .run(model, minuteWindow, 'minute')
-  }
-
-  // Track per-day requests
-  const existingDay = db.prepare('SELECT * FROM rate_limit_tracking WHERE model = ? AND window_type = ? AND window_start = ?')
-    .get(model, 'day', dayWindow) as any
-  if (existingDay) {
-    db.prepare('UPDATE rate_limit_tracking SET request_count = request_count + 1 WHERE id = ?').run(existingDay.id)
-  } else {
-    db.prepare('INSERT INTO rate_limit_tracking (model, request_count, window_start, window_type) VALUES (?, 1, ?, ?)')
-      .run(model, dayWindow, 'day')
-  }
-
-  // Clean old records (older than 2 days)
-  db.prepare('DELETE FROM rate_limit_tracking WHERE datetime(window_start) < datetime(\'now\', \'-2 days\')').run()
-}
-
-export function getModelUsage(model: string): { rpm: number; rpd: number } {
-  const db = getDb()
-  const now = new Date()
-  const minuteWindow = new Date(now.getFullYear(), now.getMonth(), now.getDate(), now.getHours(), now.getMinutes(), 0, 0).toISOString()
-  const dayWindow = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0).toISOString()
-
-  const minuteRow = db.prepare('SELECT request_count FROM rate_limit_tracking WHERE model = ? AND window_type = ? AND window_start = ?')
-    .get(model, 'minute', minuteWindow) as any
-  const dayRow = db.prepare('SELECT request_count FROM rate_limit_tracking WHERE model = ? AND window_type = ? AND window_start = ?')
-    .get(model, 'day', dayWindow) as any
-
-  return {
-    rpm: minuteRow?.request_count || 0,
-    rpd: dayRow?.request_count || 0
-  }
-}
-
-export function isModelRateLimited(model: string, tier?: string): boolean {
-  const usage = getModelUsage(model)
-  const limits = getModelRateLimit(model, tier)
-  return usage.rpm >= limits.rpm || usage.rpd >= limits.rpd
-}
-
 export function getAvailableModels(tier?: string): string[] {
-  const actualTier = tier || getApiTier().tier
-  if (actualTier === 'pro') {
+  const db = getDb()
+  
+  // Check if we have any pro tier keys
+  const proKeys = db.prepare('SELECT COUNT(*) as count FROM api_keys WHERE tier = \'pro\' AND is_active = 1 AND provider = \'google\'').get() as any
+  const hasProKeys = proKeys.count > 0
+  
+  // Only include pro models if we have actual pro-tier keys detected
+  // Don't assume primary key might be pro - we should have detected its tier during tier detection
+  if (hasProKeys) {
     return ['gemini-3.5-flash', 'gemini-3.1-pro', 'gemini-3.1-flash-lite']
   } else {
     return ['gemini-3.1-flash-lite', 'gemini-3.5-flash']
@@ -584,4 +579,166 @@ export function getAvailableModels(tier?: string): string[] {
 export function getDefaultModel(tier?: string): string {
   const actualTier = tier || getApiTier().tier
   return actualTier === 'pro' ? 'gemini-3.5-flash' : 'gemini-3.1-flash-lite'
+}
+
+// ─── API Key Management ───────────────────────────────────────────
+
+export function getApiKeys(provider: string = 'google'): Array<{ id: number; name: string; api_key: string; provider: string; tier: string; is_active: number; created_at: string; last_used_at: string | null }> {
+  const db = getDb()
+  return db.prepare('SELECT * FROM api_keys WHERE provider = ? AND is_active = 1 ORDER BY created_at ASC').all(provider) as any[]
+}
+
+export function addApiKey(name: string, apiKey: string, provider: string = 'google'): number {
+  const db = getDb()
+  const result = db.prepare('INSERT INTO api_keys (name, api_key, provider) VALUES (?, ?, ?)').run(name, apiKey, provider)
+  return result.lastInsertRowid as number
+}
+
+export function removeApiKey(id: number): void {
+  const db = getDb()
+  db.prepare('UPDATE api_keys SET is_active = 0 WHERE id = ?').run(id)
+}
+
+export function updateApiKeyLastUsed(id: number): void {
+  const db = getDb()
+  db.prepare('UPDATE api_keys SET last_used_at = datetime(\'now\') WHERE id = ?').run(id)
+}
+
+export function updateApiKeyTier(id: number, tier: 'free' | 'pro'): void {
+  const db = getDb()
+  db.prepare('UPDATE api_keys SET tier = ? WHERE id = ?').run(tier, id)
+}
+
+export function getApiKeysByTier(tier: 'free' | 'pro', provider: string = 'google'): Array<{ id: number; name: string; api_key: string; tier: string; is_active: number; created_at: string; last_used_at: string | null }> {
+  const db = getDb()
+  return db.prepare('SELECT * FROM api_keys WHERE provider = ? AND tier = ? AND is_active = 1 ORDER BY created_at ASC').all(provider, tier) as any[]
+}
+
+export function getAvailableApiKeyForModel(model: string, requiredTier?: 'free' | 'pro', excludeApiKeyId?: number): { id: number; api_key: string } | null {
+  const db = getDb()
+  const now = new Date().toISOString()
+  
+  // Determine required tier based on model
+  let tierFilter: string | null | undefined = requiredTier
+  if (!tierFilter) {
+    // gemini-3.1-pro requires pro tier, others work with free tier
+    tierFilter = model === 'gemini-3.1-pro' ? 'pro' : null
+  }
+  
+  // Build query with optional tier filter
+  let query = `
+    SELECT id, api_key 
+    FROM api_keys 
+    WHERE is_active = 1 
+    AND provider = 'google'
+    AND id NOT IN (
+      SELECT api_key_id 
+      FROM model_exhaustion 
+      WHERE model = ? 
+      AND available_at > ?
+      AND api_key_id IS NOT NULL
+    )
+  `
+  const params: any[] = [model, now]
+  
+  if (tierFilter) {
+    query += ' AND tier = ?'
+    params.push(tierFilter)
+  }
+  
+  // Exclude a specific API key ID if provided (for rotation)
+  if (excludeApiKeyId) {
+    query += ' AND id != ?'
+    params.push(excludeApiKeyId)
+  }
+  
+  query += ' ORDER BY last_used_at ASC NULLS LAST'
+  
+  const availableKeys = db.prepare(query).all(...params) as any[]
+  
+  logger.info('db', `getAvailableApiKeyForModel for ${model}: found ${availableKeys.length} keys (exclude: ${excludeApiKeyId}, tier: ${tierFilter})`)
+  
+  if (availableKeys.length === 0) {
+    return null
+  }
+  
+  return { id: availableKeys[0].id, api_key: availableKeys[0].api_key }
+}
+
+export function markModelExhausted(model: string, apiKeyId: number | null): void {
+  const db = getDb()
+  const now = new Date()
+  const availableAt = new Date(now.getTime() + 5 * 60 * 60 * 1000) // 5 hours from now
+  
+  db.prepare(`
+    INSERT INTO model_exhaustion (model, api_key_id, exhausted_at, available_at)
+    VALUES (?, ?, ?, ?)
+  `).run(model, apiKeyId, now.toISOString(), availableAt.toISOString())
+  
+  const keyLabel = apiKeyId ? `API key ${apiKeyId}` : 'primary key'
+  logger.info('db', `marked model ${model} as exhausted for ${keyLabel} until ${availableAt.toISOString()}`)
+}
+
+export function isModelExhaustedForAllKeys(model: string, requiredTier?: 'free' | 'pro'): boolean {
+  const db = getDb()
+  const now = new Date().toISOString()
+  
+  // Determine required tier based on model
+  let tierFilter: string | null | undefined = requiredTier
+  if (!tierFilter) {
+    tierFilter = model === 'gemini-3.1-pro' ? 'pro' : null
+  }
+  
+  // If tier is specified, only check keys of that tier
+  if (tierFilter) {
+    const tierKeys = db.prepare('SELECT COUNT(*) as count FROM api_keys WHERE is_active = 1 AND provider = \'google\' AND tier = ?').get(tierFilter) as any
+    if (tierKeys.count === 0) return false
+    
+    const exhaustedTierKeys = db.prepare(`
+      SELECT COUNT(DISTINCT api_key_id) as count 
+      FROM model_exhaustion 
+      WHERE model = ? 
+      AND available_at > ?
+      AND api_key_id IS NOT NULL
+      AND api_key_id IN (SELECT id FROM api_keys WHERE tier = ? AND is_active = 1)
+    `).get(model, now, tierFilter) as any
+    
+    return exhaustedTierKeys.count >= tierKeys.count
+  }
+  
+  // Fallback to original logic for non-tier-specific checks
+  const profile = getProfile()
+  const hasPrimaryKey = !!(profile?.gemini_api_key || process.env.GEMINI_API_KEY)
+  const additionalKeys = db.prepare('SELECT COUNT(*) as count FROM api_keys WHERE is_active = 1 AND provider = \'google\'').get() as any
+  const totalKeys = additionalKeys.count + (hasPrimaryKey ? 1 : 0)
+  if (totalKeys === 0) return false
+  
+  const exhaustedKeys = db.prepare(`
+    SELECT COUNT(DISTINCT COALESCE(api_key_id, -1)) as count 
+    FROM model_exhaustion 
+    WHERE model = ? 
+    AND available_at > ?
+  `).get(model, now) as any
+  
+  return exhaustedKeys.count >= totalKeys
+}
+
+export function getModelExhaustionStatus(model: string): { exhausted: boolean; availableAt: string | null } {
+  const db = getDb()
+  const now = new Date().toISOString()
+  
+  if (!isModelExhaustedForAllKeys(model)) {
+    return { exhausted: false, availableAt: null }
+  }
+  
+  const record = db.prepare(`
+    SELECT available_at 
+    FROM model_exhaustion 
+    WHERE model = ? 
+    AND available_at > ?
+    ORDER BY available_at DESC 
+    LIMIT 1
+  `).get(model, now) as any
+  
+  return { exhausted: true, availableAt: record?.available_at ?? null }
 }

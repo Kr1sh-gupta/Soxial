@@ -155,8 +155,7 @@ export interface PromptInputProps {
     options?: string[];
   };
   onAnswer?: (answer: string | string[]) => void;
-  rateLimitInfo?: Record<string, { usage: { rpm: number; rpd: number }; limits: { rpm: number; rpd: number } }>;
-  rateLimitReached?: boolean;
+  modelExhaustionStatus?: Record<string, { exhausted: boolean; availableAt: string | null }>;
 }
 
 export const PromptInput = React.forwardRef<HTMLDivElement, PromptInputProps>(
@@ -174,8 +173,7 @@ export const PromptInput = React.forwardRef<HTMLDivElement, PromptInputProps>(
     onRemoveQueued,
     question,
     onAnswer,
-    rateLimitInfo,
-    rateLimitReached,
+    modelExhaustionStatus,
   }) => {
     const [expanded, setExpanded] = useState(false);
     const [isSmooth, setIsSmooth] = useState(false);
@@ -207,16 +205,13 @@ export const PromptInput = React.forwardRef<HTMLDivElement, PromptInputProps>(
     const showEffort = modelSupportsEffort(selectedModel);
     const hasValue = value.trim() !== "" || attachments.length > 0;
 
-    // Check if current model is rate limited
-    const isRateLimited = rateLimitInfo && rateLimitInfo[selectedModel] && 
-      (rateLimitInfo[selectedModel].usage.rpm >= rateLimitInfo[selectedModel].limits.rpm ||
-       rateLimitInfo[selectedModel].usage.rpd >= rateLimitInfo[selectedModel].limits.rpd);
+    // Check if current model is exhausted
+    const isExhausted = modelExhaustionStatus?.[selectedModel]?.exhausted;
 
-    // Find the first non-rate-limited model
+    // Find the first non-exhausted model
     const availableModel = models.find(m => {
-      const info = rateLimitInfo?.[m];
-      if (!info) return true;
-      return info.usage.rpm < info.limits.rpm && info.usage.rpd < info.limits.rpd;
+      const exhausted = modelExhaustionStatus?.[m]?.exhausted;
+      return !exhausted;
     }) || models[0];
 
     const updateFades = () => {
@@ -256,16 +251,6 @@ export const PromptInput = React.forwardRef<HTMLDivElement, PromptInputProps>(
       if (!qHasAnswer || !onAnswer) return;
       onAnswer(qAnswer);
       setQAnswer("");
-    };
-
-    // Format rate limit info for display
-    const getRateLimitText = (model: string) => {
-      const info = rateLimitInfo?.[model];
-      if (!info) return null;
-      const { usage, limits } = info;
-      const rpmPercent = Math.round((usage.rpm / limits.rpm) * 100);
-      const rpdPercent = Math.round((usage.rpd / limits.rpd) * 100);
-      return `${rpmPercent}% RPM / ${rpdPercent}% RPD`;
     };
 
     const expand = () => {
@@ -364,13 +349,13 @@ export const PromptInput = React.forwardRef<HTMLDivElement, PromptInputProps>(
 
     const handleSubmit = () => {
       if (value.trim() === "" && attachments.length === 0) return;
-      if (isRateLimited && availableModel !== selectedModel) {
-        // Auto-switch to available model
+      if (isExhausted && availableModel !== selectedModel) {
+        // Auto-switch to a non-exhausted model
         setSelectedModel(availableModel);
         return;
       }
-      if (isRateLimited) {
-        // All models are rate limited
+      if (isExhausted) {
+        // All models are exhausted
         return;
       }
       setIsSmooth(false);
@@ -576,24 +561,6 @@ export const PromptInput = React.forwardRef<HTMLDivElement, PromptInputProps>(
             ))}
           </div>
         </div>
-
-        {/* Rate limit warning */}
-        {rateLimitReached && (
-          <div
-            className="w-full relative z-0 overflow-hidden animate-in fade-in slide-in-from-top-3 duration-300"
-            style={{
-              height: 40,
-            }}
-          >
-            <div className="absolute bottom-0 left-0 right-0 bg-red-500/10 border border-red-500/20 rounded-t-2xl px-3 py-2 flex items-center gap-2">
-              <div className="flex-1">
-                <p className="text-[11px] text-red-500 font-medium">
-                  API rate limit reached. Please try again later or upgrade your API tier.
-                </p>
-              </div>
-            </div>
-          </div>
-        )}
 
         {/* Main card */}
         <div
@@ -875,36 +842,52 @@ export const PromptInput = React.forwardRef<HTMLDivElement, PromptInputProps>(
                     : "opacity-0 scale-95 translate-y-3 pointer-events-none",
                 )}
               >
-                {models.map((model, idx) => (
-                  <button
-                    key={model}
-                    type="button"
-                    onMouseDown={(e) => e.preventDefault()}
-                    onMouseEnter={() =>
-                      setHoverStyle({
-                        opacity: 1,
-                        transform: `translateY(${idx * 34}px) scale(1)`,
-                        transition:
-                          "transform 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275)",
-                      })
-                    }
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setSelectedModel(model);
-                      setModelOpen(false);
-                      if (!modelSupportsEffort(model)) setEffortIndex(0);
-                    }}
-                    className={cn(
-                      "group relative flex h-8 w-full items-center rounded-xl px-2.5 text-left text-xs font-medium text-foreground/80 hover:text-foreground",
-                      selectedModel === model && "text-foreground",
-                    )}
-                  >
-                    <span className="flex items-center gap-2">
-                      <GlmIcon className="size-3.5 opacity-85 group-hover:opacity-100" />
-                      {model}
-                    </span>
-                  </button>
-                ))}
+                {models.map((model, idx) => {
+                  const isModelExhausted = modelExhaustionStatus?.[model]?.exhausted;
+                  const availableAt = modelExhaustionStatus?.[model]?.availableAt;
+                  const availableTime = availableAt ? new Date(availableAt.replace(' ', 'T') + 'Z') : null;
+                  const timeRemaining = availableTime ? availableTime.getTime() - Date.now() : null;
+                  const hoursRemaining = timeRemaining != null ? Math.ceil(timeRemaining / (1000 * 60 * 60)) : null;
+                  
+                  return (
+                    <button
+                      key={model}
+                      type="button"
+                      onMouseDown={(e) => e.preventDefault()}
+                      onMouseEnter={() =>
+                        setHoverStyle({
+                          opacity: 1,
+                          transform: `translateY(${idx * 34}px) scale(1)`,
+                          transition:
+                            "transform 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275)",
+                        })
+                      }
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        if (isModelExhausted) return;
+                        setSelectedModel(model);
+                        setModelOpen(false);
+                        if (!modelSupportsEffort(model)) setEffortIndex(0);
+                      }}
+                      className={cn(
+                        "group relative flex h-8 w-full items-center rounded-xl px-2.5 text-left text-xs font-medium text-foreground/80 hover:text-foreground",
+                        selectedModel === model && "text-foreground",
+                        isModelExhausted && "opacity-40 cursor-not-allowed",
+                      )}
+                      disabled={isModelExhausted}
+                    >
+                      <span className="flex items-center gap-2">
+                        <GlmIcon className="size-3.5 opacity-85 group-hover:opacity-100" />
+                        {model}
+                      </span>
+                      {isModelExhausted && hoursRemaining != null && hoursRemaining > 0 && (
+                        <span className="ml-auto text-[10px] text-muted-foreground/60">
+                          {hoursRemaining}h
+                        </span>
+                      )}
+                    </button>
+                  );
+                })}
               </div>
             </div>
 

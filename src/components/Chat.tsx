@@ -342,8 +342,7 @@ export default function Chat({ initialSessionId }: { initialSessionId?: number |
   } | null>(null);
   const [apiTier, setApiTier] = useState<{ tier: string } | null>(null);
   const [availableModels, setAvailableModels] = useState<string[]>([]);
-  const [rateLimitInfo, setRateLimitInfo] = useState<Record<string, { usage: { rpm: number; rpd: number }; limits: { rpm: number; rpd: number } }>>({});
-  const [rateLimitReached, setRateLimitReached] = useState(false);
+  const [modelExhaustionStatus, setModelExhaustionStatus] = useState<Record<string, { exhausted: boolean; availableAt: string | null }>>({});
 
   function parseAttachments(raw: any): ChatAttachment[] | undefined {
     if (!raw) return undefined;
@@ -462,29 +461,17 @@ export default function Chat({ initialSessionId }: { initialSessionId?: number |
         const defaultModel = await window.api.getDefaultModel();
         setSelectedModel(defaultModel);
       }
-      
-      // Load rate limit info for all models
-      const rateInfo: Record<string, { usage: { rpm: number; rpd: number }; limits: { rpm: number; rpd: number } }> = {};
+
+      // Load model exhaustion status for all models
+      const exhaustionInfo: Record<string, { exhausted: boolean; availableAt: string | null }> = {};
       for (const model of models) {
-        const info = await window.api.getModelUsage(model);
-        rateInfo[model] = info;
+        const status = await window.api.getModelExhaustionStatus(model);
+        exhaustionInfo[model] = status;
       }
-      setRateLimitInfo(rateInfo);
-      
-      // Check if any model has reached rate limits
-      const anyRateLimited = Object.values(rateInfo).some(
-        info => info.usage.rpm >= info.limits.rpm || info.usage.rpd >= info.limits.rpd
-      );
-      setRateLimitReached(anyRateLimited);
+      setModelExhaustionStatus(exhaustionInfo);
     } catch (err) {
       console.error('Failed to load API info:', err);
     }
-  }
-
-  function checkRateLimitForModel(model: string): boolean {
-    const info = rateLimitInfo[model];
-    if (!info) return false;
-    return info.usage.rpm >= info.limits.rpm || info.usage.rpd >= info.limits.rpd;
   }
 
   const autoSendDone = useRef(false);
@@ -910,7 +897,7 @@ export default function Chat({ initialSessionId }: { initialSessionId?: number |
     const result = await window.api.chatSend(apiMessages, {
       model: useModel,
       effort: useEffort,
-    });
+    }, sessionId);
 
     window.api.removeAllListeners("chat:chunk");
 
@@ -1233,7 +1220,6 @@ export default function Chat({ initialSessionId }: { initialSessionId?: number |
                   }
                   models={availableModels.length > 0 ? availableModels : ["Gemini 3.1 Flash Lite"]}
                   modelSupportsEffort={(model) => model !== "Gemini 3.1 Pro"}
-                  disabled={streaming || rateLimitReached}
                   isStreaming={streaming}
                   onStop={handleStop}
                   queue={queuedMessages}
@@ -1245,8 +1231,7 @@ export default function Chat({ initialSessionId }: { initialSessionId?: number |
                   question={pendingQuestion || undefined}
                   onAnswer={handleAnswer}
                   onSubmit={(value, meta) => send(value, meta.model, meta.effort, meta.attachments)}
-                  rateLimitInfo={rateLimitInfo}
-                  rateLimitReached={rateLimitReached}
+                  modelExhaustionStatus={modelExhaustionStatus}
                 />
               </div>
             </div>

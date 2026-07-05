@@ -23,7 +23,7 @@ const api = {
   sendOnboardingAnswer: (id: string, answers: { id: string; answer: string | string[] }[]) => ipcRenderer.send('onboarding:answer', { id, answers }),
   saveOnboardingConversation: (messages: { role: string; content: string; steps?: any[] }[]) => ipcRenderer.invoke('onboarding:saveConversation', messages),
 
-  chatSend: (messages: any[], options?: { model?: string; effort?: string }) => ipcRenderer.invoke('chat:send', messages, options),
+  chatSend: (messages: any[], options?: { model?: string; effort?: string }, sessionId?: number) => ipcRenderer.invoke('chat:send', messages, options, sessionId),
   chatInject: (content: string) => ipcRenderer.invoke('chat:inject', content),
   chatStop: () => ipcRenderer.invoke('chat:stop'),
   onChatQuestion: (cb: (q: { id: string; text: string; type: 'single' | 'multi' | 'text'; options?: string[] }) => void) =>
@@ -52,7 +52,11 @@ const api = {
   getTier: () => ipcRenderer.invoke('api:getTier'),
   getAvailableModels: () => ipcRenderer.invoke('api:getAvailableModels'),
   getDefaultModel: () => ipcRenderer.invoke('api:getDefaultModel'),
-  getModelUsage: (model: string) => ipcRenderer.invoke('api:getModelUsage', model),
+  getApiKeys: () => ipcRenderer.invoke('api:getApiKeys'),
+  addApiKey: (name: string, apiKey: string) => ipcRenderer.invoke('api:addApiKey', name, apiKey),
+  removeApiKey: (id: number) => ipcRenderer.invoke('api:removeApiKey', id),
+  getModelExhaustionStatus: (model: string) => ipcRenderer.invoke('api:getModelExhaustionStatus', model),
+  detectApiTier: () => ipcRenderer.invoke('api:detectTier'),
 
   removeAllListeners: (channel: string) => ipcRenderer.removeAllListeners(channel),
 }

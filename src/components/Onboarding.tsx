@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
-import { Check, Sparkles, ArrowRight, RefreshCw, ShieldAlert, Search as SearchIcon, Globe as GlobeIcon, Image as ImageIcon, AtSign, List, Eye, Send, CornerUpLeft, Newspaper, Heart, Repeat2, Bookmark, UserPlus, Info, Layers, BookOpen, MessageCircle, BadgeCheck, Flame, ThumbsUp, Database, Lightbulb, ShieldCheck, Gauge, Crosshair, SquarePen, RotateCcw, CalendarClock, Save, Download, Briefcase, Users, Package, Target, FileText, Trash2, TrendingUp, MessageSquare } from 'lucide-react'
+import { Check, Sparkles, ArrowRight, RefreshCw, ShieldAlert, Search as SearchIcon, Globe as GlobeIcon, Image as ImageIcon, AtSign, List, Eye, Send, CornerUpLeft, Newspaper, Heart, Repeat2, Bookmark, UserPlus, Info, Layers, BookOpen, MessageCircle, BadgeCheck, Flame, ThumbsUp, Database, Lightbulb, ShieldCheck, Gauge, Crosshair, SquarePen, RotateCcw, CalendarClock, Save, Download, Briefcase, Users, Package, Target, FileText, Trash2, TrendingUp, MessageSquare, Plus, Clock } from 'lucide-react'
 import { Message, MessageContent } from 'src/components/ai-elements/message'
 import { ChainOfThoughtStep } from 'src/components/ai-elements/chain-of-thought'
 import {
@@ -320,25 +320,200 @@ function StepPlatforms({ formData, update, onBack, onNext }: any) {
 }
 
 function StepApiKey({ formData, update, onBack, onNext }: any) {
-  const apiKey = String(formData.gemini_api_key || '').trim()
+  const [showAddKeyForm, setShowAddKeyForm] = useState(false)
+  const [newKeyName, setNewKeyName] = useState('')
+  const [newKeyKey, setNewKeyKey] = useState('')
+  const [addingKey, setAddingKey] = useState(false)
+  const [apiKeys, setApiKeys] = useState<Array<{ id: number; name: string; api_key: string; tier: string; created_at: string; last_used_at: string | null }>>([])
+  const [primaryApiKey, setPrimaryApiKey] = useState(formData.gemini_api_key || '')
+  const [detectingTier, setDetectingTier] = useState(false)
+
+  useEffect(() => {
+    window.api.getApiKeys().then((keys: any[]) => {
+      setApiKeys(keys || [])
+    })
+  }, [])
+
+  const handleAddApiKey = async () => {
+    if (!newKeyName.trim() || !newKeyKey.trim()) return
+    
+    setAddingKey(true)
+    try {
+      await window.api.addApiKey(newKeyName.trim(), newKeyKey.trim())
+      const keys = await window.api.getApiKeys()
+      setApiKeys(keys || [])
+      setNewKeyName('')
+      setNewKeyKey('')
+      setShowAddKeyForm(false)
+    } catch (err) {
+      console.error('Failed to add API key:', err)
+      alert('Failed to add API key. Please try again.')
+    } finally {
+      setAddingKey(false)
+    }
+  }
+
+  const handleRemoveApiKey = async (id: number) => {
+    try {
+      await window.api.removeApiKey(id)
+      const keys = await window.api.getApiKeys()
+      setApiKeys(keys || [])
+    } catch (err) {
+      console.error('Failed to remove API key:', err)
+      alert('Failed to remove API key. Please try again.')
+    }
+  }
+
+  const handleDetectTier = async () => {
+    setDetectingTier(true)
+    try {
+      await window.api.detectApiTier()
+      const keys = await window.api.getApiKeys()
+      setApiKeys(keys || [])
+    } catch (err) {
+      console.error('Failed to detect API tier:', err)
+      alert('Failed to detect API tier. Please try again.')
+    } finally {
+      setDetectingTier(false)
+    }
+  }
+
+  const handleContinue = () => {
+    update('gemini_api_key', primaryApiKey.trim())
+    onNext()
+  }
+
+  const hasAnyKey = primaryApiKey.trim() || apiKeys.length > 0
 
   return (
     <div className="space-y-7">
       <div>
-        <h1 className="text-[28px] font-semibold text-foreground tracking-tight leading-tight">Add your AI Studio key</h1>
+        <h1 className="text-[28px] font-semibold text-foreground tracking-tight leading-tight">Add your AI Studio keys</h1>
         <p className="text-muted-foreground mt-2 text-[14px] leading-relaxed">
-          Soxial uses your Google AI Studio key for chat and onboarding.
+          Soxial uses your Google AI Studio keys for chat and onboarding. Add multiple keys to increase your rate limits.
         </p>
       </div>
 
-      <Input
-        label="Google AI Studio API key"
-        value={formData.gemini_api_key}
-        onChange={(v: string) => update('gemini_api_key', v.trim())}
-        placeholder="AIza..."
-        type="password"
-        hint="Create one at aistudio.google.com by signing in and choosing Create API key."
-      />
+      {/* Primary API Key */}
+      <div className="space-y-4">
+        <div className="text-[13px] font-medium text-muted-foreground">Primary API Key</div>
+        <Input
+          label="Google AI Studio API key"
+          value={primaryApiKey}
+          onChange={(v: string) => setPrimaryApiKey(v.trim())}
+          placeholder="AIza..."
+          type="password"
+          hint="This will be your main API key. Create one at aistudio.google.com"
+        />
+      </div>
+
+      {/* Additional API Keys */}
+      <div className="space-y-4">
+        <div className="flex items-center justify-between">
+          <div className="text-[13px] font-medium text-muted-foreground">Additional API Keys</div>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={handleDetectTier}
+              disabled={detectingTier}
+              className="flex items-center gap-1.5 text-xs text-muted-foreground/60 hover:text-foreground transition-colors disabled:opacity-50"
+            >
+              {detectingTier ? (
+                <span className="animate-pulse">Detecting...</span>
+              ) : (
+                <>
+                  <Save className="size-3.5" />
+                  Detect Tiers
+                </>
+              )}
+            </button>
+            <button
+              onClick={() => setShowAddKeyForm(!showAddKeyForm)}
+              className="flex items-center gap-1.5 text-xs text-muted-foreground/60 hover:text-foreground transition-colors"
+            >
+              <Plus className="size-3.5" />
+              Add Key
+            </button>
+          </div>
+        </div>
+
+        {showAddKeyForm && (
+          <div className="space-y-3 p-4 bg-white/[0.02] border border-white/[0.06] rounded-xl">
+            <input
+              type="text"
+              value={newKeyName}
+              onChange={(e) => setNewKeyName(e.target.value)}
+              placeholder="Key name (e.g., Personal, Work)"
+              className="w-full bg-white/[0.02] border border-white/[0.06] rounded-lg px-4 py-2 text-sm text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:border-white/[0.12] transition-colors"
+            />
+            <input
+              type="password"
+              value={newKeyKey}
+              onChange={(e) => setNewKeyKey(e.target.value)}
+              placeholder="API key"
+              className="w-full bg-white/[0.02] border border-white/[0.06] rounded-lg px-4 py-2 text-sm text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:border-white/[0.12] transition-colors"
+            />
+            <div className="flex gap-2">
+              <button
+                onClick={handleAddApiKey}
+                disabled={addingKey || !newKeyName.trim() || !newKeyKey.trim()}
+                className="flex items-center gap-2 px-4 py-2 bg-foreground text-background rounded-lg text-sm font-medium hover:opacity-90 transition-opacity disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {addingKey ? <span className="animate-pulse">Adding...</span> : 'Add Key'}
+              </button>
+              <button
+                onClick={() => {
+                  setShowAddKeyForm(false)
+                  setNewKeyName('')
+                  setNewKeyKey('')
+                }}
+                className="px-4 py-2 text-sm text-muted-foreground/60 hover:text-foreground transition-colors"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        )}
+
+        {apiKeys.length > 0 ? (
+          <div className="space-y-2">
+            {apiKeys.map((key) => (
+              <div key={key.id} className="flex items-center justify-between p-4 bg-white/[0.02] border border-white/[0.06] rounded-lg">
+                <div className="flex items-center gap-3">
+                  <div className={`size-2 rounded-full ${key.tier === 'pro' ? 'bg-emerald-500' : key.tier === 'free' ? 'bg-amber-500' : 'bg-foreground/40'}`} />
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <div className="text-sm font-medium text-foreground/80">{key.name}</div>
+                      {key.tier !== 'unknown' && (
+                        <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${key.tier === 'pro' ? 'bg-emerald-500/10 text-emerald-500' : 'bg-amber-500/10 text-amber-500'}`}>
+                          {key.tier.toUpperCase()}
+                        </span>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-2 mt-1">
+                      {key.last_used_at && (
+                        <div className="flex items-center gap-1 text-[11px] text-muted-foreground/50">
+                          <Clock className="size-3" />
+                          Used {new Date(key.last_used_at.replace(' ', 'T') + 'Z').toLocaleDateString()}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+                <button
+                  onClick={() => handleRemoveApiKey(key.id)}
+                  className="p-2 text-muted-foreground/40 hover:text-foreground transition-colors"
+                >
+                  <Trash2 className="size-4" />
+                </button>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="text-[12px] text-muted-foreground/40">
+            No additional API keys. Add multiple keys to increase your rate limits.
+          </p>
+        )}
+      </div>
 
       <button
         type="button"
@@ -357,7 +532,7 @@ function StepApiKey({ formData, update, onBack, onNext }: any) {
         >
           Back
         </button>
-        <PrimaryButton onClick={onNext} disabled={!apiKey} className="flex-1 bg-foreground text-background py-3.5">
+        <PrimaryButton onClick={handleContinue} disabled={!hasAnyKey} className="flex-1 bg-foreground text-background py-3.5">
           Continue
         </PrimaryButton>
       </div>
