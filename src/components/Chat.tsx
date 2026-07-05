@@ -622,18 +622,6 @@ export default function Chat({ initialSessionId }: { initialSessionId?: number |
       setSteps([...stepsRef.current]);
     });
     window.api.onChatReasoning((text) => {
-      // Check for model switch messages
-      if (text.includes('Switching to')) {
-        const s = stepsRef.current;
-        const last = s[s.length - 1];
-        if (last && last.type === "reasoning") {
-          last.text = text;
-        } else {
-          s.push({ type: "reasoning", text });
-        }
-        setSteps([...s]);
-        return;
-      }
       const s = stepsRef.current;
       const last = s[s.length - 1];
       if (last && last.type === "reasoning") {

@@ -330,7 +330,7 @@ function StepApiKey({ formData, update, onBack, onNext }: any) {
 
   useEffect(() => {
     window.api.getApiKeys().then((keys: any[]) => {
-      setApiKeys(keys || [])
+      setApiKeys((keys || []).filter(k => k.name !== 'Primary'))
     })
   }, [])
 
@@ -341,7 +341,7 @@ function StepApiKey({ formData, update, onBack, onNext }: any) {
     try {
       await window.api.addApiKey(newKeyName.trim(), newKeyKey.trim())
       const keys = await window.api.getApiKeys()
-      setApiKeys(keys || [])
+      setApiKeys((keys || []).filter(k => k.name !== 'Primary'))
       setNewKeyName('')
       setNewKeyKey('')
       setShowAddKeyForm(false)
@@ -357,7 +357,7 @@ function StepApiKey({ formData, update, onBack, onNext }: any) {
     try {
       await window.api.removeApiKey(id)
       const keys = await window.api.getApiKeys()
-      setApiKeys(keys || [])
+      setApiKeys((keys || []).filter(k => k.name !== 'Primary'))
     } catch (err) {
       console.error('Failed to remove API key:', err)
       alert('Failed to remove API key. Please try again.')
@@ -369,7 +369,7 @@ function StepApiKey({ formData, update, onBack, onNext }: any) {
     try {
       await window.api.detectApiTier()
       const keys = await window.api.getApiKeys()
-      setApiKeys(keys || [])
+      setApiKeys((keys || []).filter(k => k.name !== 'Primary'))
     } catch (err) {
       console.error('Failed to detect API tier:', err)
       alert('Failed to detect API tier. Please try again.')
@@ -736,18 +736,6 @@ function StepAiOnboarding({ formData, onComplete }: { formData: any; onComplete:
 
     window.api.onOnboardingChunk((text) => {
     if (text === 'PHASE:gather' || text === 'PHASE:interview') return
-    // Check for model fallback messages
-    if (text.includes('Switching to')) {
-      const stepsRefCurrent = stepsRef.current
-      const last = stepsRefCurrent[stepsRefCurrent.length - 1]
-      if (last && last.type === 'reasoning') {
-        last.text = text
-      } else {
-        stepsRef.current.push({ type: 'reasoning', text })
-      }
-      setSteps([...stepsRef.current])
-      return
-    }
     streamTextRef.current += text
     setStreamText(streamTextRef.current)
   })

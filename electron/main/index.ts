@@ -325,9 +325,7 @@ function setupIpc() {
           (text) => resolve({ text }),
           (error) => resolve({ text: '', error }),
           (text) => mainWindow?.webContents.send('onboarding:reasoning', text),
-          { maxSteps: 60, fallbackChain: ONBOARDING_MODEL_FALLBACK, onModelSwitch: (model, index, total) => {
-            sendChunk(`Switching to ${model} (${index}/${total})...`)
-          }},
+          { maxSteps: 60, fallbackChain: ONBOARDING_MODEL_FALLBACK },
           onboardingTools,
           ONBOARDING_SYSTEM_PROMPT
         )
@@ -358,9 +356,7 @@ function setupIpc() {
           (text) => resolve({ text }),
           (error) => resolve({ text: '', error }),
           (text) => mainWindow?.webContents.send('onboarding:reasoning', text),
-          { maxSteps: 60, fallbackChain: ONBOARDING_MODEL_FALLBACK, onModelSwitch: (model, index, total) => {
-            sendChunk(`Switching to ${model} (${index}/${total})...`)
-          }},
+          { maxSteps: 60, fallbackChain: ONBOARDING_MODEL_FALLBACK },
           onboardingTools,
           ONBOARDING_SYSTEM_PROMPT
         )
@@ -464,9 +460,6 @@ function setupIpc() {
         {
           ...options,
           fallbackChain,
-          onModelSwitch: (model, index, total) => {
-            mainWindow?.webContents.send('chat:reasoning', `Switching to ${model} (${index}/${total})...`)
-          }
         },
         chatTools,
         undefined,

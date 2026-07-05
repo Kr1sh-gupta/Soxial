@@ -1,5 +1,5 @@
-import { GoogleGenAI } from '@google/genai'
-import { zodToJsonSchema } from 'zod-to-json-schema'
+import { streamText, generateText as aiGenerateText, isStepCount } from 'ai'
+import { createGoogle } from '@ai-sdk/google'
 import { getProfile, getApiTier, getAvailableApiKeyForModel, markModelExhausted, isModelExhaustedForAllKeys, updateApiKeyLastUsed, getChatSessionSteps, updateChatSessionSteps } from './db'
 import { createTools } from './tools'
 import { logger } from './log'
@@ -21,11 +21,9 @@ const MODEL_LABELS: Record<string, string> = {
   'gemini-3.1-flash-lite': CHAT_MODEL,
 }
 
-// Fallback chain for different scenarios
 export const ONBOARDING_MODEL_FALLBACK = ['gemini-3.5-flash', 'gemini-3.1-flash-lite']
 export const CHAT_MODEL_FALLBACK_PRO = ['gemini-3.5-flash', 'gemini-3.1-pro', 'gemini-3.1-flash-lite']
 export const CHAT_MODEL_FALLBACK_FREE = ['gemini-3.1-flash-lite', 'gemini-3.5-flash']
-
 
 const EFFORT_MAP: Record<string, string> = {
   Low: 'low',
@@ -46,7 +44,6 @@ export interface AgentOptions {
 export interface AgentConfig {
   apiKey: string
   apiKeyId: number | null
-  google: GoogleGenAI
   modelId: string
   thinkingLevel: string
   system: string
@@ -103,7 +100,6 @@ export function getAgentConfig(options?: AgentOptions): AgentConfig {
   }
 
   const { apiKey, apiKeyId } = getApiKey(modelId, undefined)
-  const google = new GoogleGenAI({ apiKey })
 
   const effortLabel = options?.effort || 'Medium'
   const thinkingLevel = EFFORT_MAP[effortLabel] || 'medium'
@@ -116,7 +112,6 @@ export function getAgentConfig(options?: AgentOptions): AgentConfig {
   return {
     apiKey,
     apiKeyId,
-    google,
     modelId,
     thinkingLevel,
     system,
@@ -383,44 +378,22 @@ export function createChatTools(
   }
 }
 
-// ─── Tool conversion: zod params → Interactions API declarations ────────────
-// CRITICAL for tool-result round-trip: declarations carry a plain JSON schema
-// (`parameters`), while the local execute fns are kept in a separate map.
-function schemaFromZod(schema: any): any {
-  if (!schema) return { type: 'object', properties: {} }
-  // zod-to-json-schema with $refStrategy:'none' produces a clean inline schema.
-  const json = zodToJsonSchema(schema, { $refStrategy: 'none' })
-  // strip $schema key (not accepted by the API)
-  if (json && json.$schema) delete json.$schema
-  return json
-}
+// ─── Tool conversion: app format → AI SDK format ────────────────────────────
 
-function buildToolDeclarations(tools: Record<string, any>): any[] {
-  const decls: any[] = []
+function toAITools(tools: Record<string, any>): Record<string, any> {
+  const result: Record<string, any> = {}
   for (const [name, t] of Object.entries(tools)) {
-    const params = t.parameters || t.inputSchema
-    decls.push({
-      type: 'function',
-      name,
+    result[name] = {
       description: t.description || name,
-      parameters: schemaFromZod(params),
-    })
+      inputSchema: t.parameters || t.inputSchema,
+      execute: t.execute,
+    }
+    if (t.toModelOutput) result[name].toModelOutput = t.toModelOutput
   }
-  return decls
+  return result
 }
 
-function buildExecuteMap(tools: Record<string, any>): Map<string, (args: any) => Promise<any>> {
-  const m = new Map<string, (args: any) => Promise<any>>()
-  for (const [name, t] of Object.entries(tools)) {
-    if (typeof t.execute === 'function') m.set(name, t.execute)
-  }
-  return m
-}
-
-// ─── Message conversion (app format → Interactions API steps) ───────────────
-// ponytail: across-turn history loaded from DB has no thought signatures, so
-// we reconstruct a best-effort step list. Within a single runAgent call the
-// authoritative server steps (with signatures) are preserved verbatim.
+// ─── Message conversion (app format → AI SDK ModelMessage) ──────────────────
 
 type AppMessage = {
   role: string
@@ -458,11 +431,9 @@ async function saveInlineImage(data: string, mimeType: string): Promise<string> 
   return outputPath
 }
 
-async function toInteractionSteps(messages: AppMessage[]): Promise<any[]> {
-  const steps: any[] = []
-  for (let i = 0; i < messages.length; i++) {
-    const msg = messages[i]
-
+async function toModelMessages(messages: AppMessage[]): Promise<any[]> {
+  const result: any[] = []
+  for (const msg of messages) {
     if (msg.role === 'system') continue
 
     if (msg.role === 'user') {
@@ -471,9 +442,9 @@ async function toInteractionSteps(messages: AppMessage[]): Promise<any[]> {
       for (const part of msg.parts || []) {
         if (part.inlineData?.data) {
           content.push({
-            type: 'image',
+            type: 'file',
+            mediaType: part.inlineData.mimeType,
             data: part.inlineData.data,
-            mime_type: part.inlineData.mimeType,
           })
           const savedPath = await saveInlineImage(part.inlineData.data, part.inlineData.mimeType)
           content.push({ type: 'text', text: `[Image saved to: ${savedPath}. Pass this path as image_path to twitter_post or twitter_reply if the user wants to post it.]` })
@@ -481,92 +452,74 @@ async function toInteractionSteps(messages: AppMessage[]): Promise<any[]> {
           content.push({ type: 'text', text: part.text })
         }
       }
-      steps.push({ type: 'user_input', content })
+      if (content.length === 0) continue
+      result.push({
+        role: 'user',
+        content: content.length === 1 && content[0].type === 'text' ? content[0].text : content,
+      })
       continue
     }
 
     if (msg.role === 'assistant') {
       const content: any[] = []
       if (msg.content) content.push({ type: 'text', text: msg.content })
-      if (content.length > 0) steps.push({ type: 'model_output', content })
       for (const tc of msg.tool_calls || []) {
-        let args: any = {}
-        try { args = JSON.parse(tc.function?.arguments || '{}') } catch { args = {} }
-        steps.push({ type: 'function_call', id: tc.id, name: tc.function?.name || '', arguments: args })
+        let input: any = {}
+        try { input = JSON.parse(tc.function?.arguments || '{}') } catch { input = {} }
+        content.push({
+          type: 'tool-call',
+          toolCallId: tc.id,
+          toolName: tc.function?.name || '',
+          input,
+        })
+      }
+      if (content.length > 0) {
+        result.push({ role: 'assistant', content })
       }
       continue
     }
 
     if (msg.role === 'tool') {
       const toolName = findToolName(messages, msg.tool_call_id)
-      steps.push({
-        type: 'function_result',
-        call_id: msg.tool_call_id || '',
-        name: toolName,
-        result: [{ type: 'text', text: msg.content || '' }],
-      })
+      let output: any = msg.content
+      try { output = JSON.parse(msg.content || '{}') } catch { /* keep raw string */ }
+      const toolResult = {
+        type: 'tool-result' as const,
+        toolCallId: msg.tool_call_id || '',
+        toolName,
+        output,
+      }
+      const last = result[result.length - 1]
+      if (last && last.role === 'tool') {
+        last.content.push(toolResult)
+      } else {
+        result.push({ role: 'tool', content: [toolResult] })
+      }
       continue
     }
   }
-  return steps
+  return result
 }
 
-// ─── 400 fallback: collapse steps to text-only user_input/model_output ──────
-// Drops thought steps (signatures may expire/invalid across turns) and
-// function_call/function_result steps (ids may not survive DB round-trips).
-function hasNonTextSteps(steps: any[]): boolean {
-  return steps.some(s => s.type !== 'user_input' && s.type !== 'model_output')
-}
-
-function stripStepsToTextOnly(steps: any[]): any[] {
-  const out: any[] = []
-  for (const s of steps) {
-    if (s.type === 'user_input') {
-      const content = (s.content || []).filter((c: any) => c.type === 'text' || c.type === 'image')
-      if (content.length > 0) out.push({ type: 'user_input', content })
-    } else if (s.type === 'model_output') {
-      const content = (s.content || []).filter((c: any) => c.type === 'text' && c.text)
-      if (content.length > 0) out.push({ type: 'model_output', content })
-    }
-  }
-  return out
-}
-
-function tryStringifyError(e: any): string {
-  try {
-    const own: Record<string, any> = {}
-    for (const k of Object.getOwnPropertyNames(e)) {
-      if (k === 'stack') continue
-      try { own[k] = e[k] } catch { /* skip */ }
-    }
-    return JSON.stringify(own).slice(0, 2000)
-  } catch {
-    return String(e)
-  }
-}
-
-// ─── Text generation (no tools, non-streaming) ─────────────────────────────
+// ─── Text generation (no tools, non-streaming) ──────────────────────────────
 
 export async function generateText(
   messages: { role: string; content: string }[],
   system?: string,
   options?: { model?: string },
 ): Promise<string> {
-  const { apiKey, google } = getAgentConfig({ model: options?.model })
-  const ai = google
+  const { apiKey } = getAgentConfig({ model: options?.model })
   const modelId = options?.model || TITLE_MODEL
   try {
-    const input = messages.map((m) => ({
-      type: m.role === 'assistant' ? 'model_output' : 'user_input',
-      content: [{ type: 'text', text: m.content }],
-    }))
-    const interaction = await ai.interactions.create({
-      model: modelId,
-      store: false,
-      input,
-      ...(system ? { system_instruction: system } : {}),
-    } as any)
-    return (interaction as any).output_text || ''
+    const { text } = await aiGenerateText({
+      model: createGoogle({ apiKey })(modelId),
+      ...(system ? { system } : {}),
+      messages: messages.map((m) => ({
+        role: m.role === 'assistant' ? ('assistant' as const) : ('user' as const),
+        content: m.content,
+      })),
+    })
+    return text || ''
   } catch (e: any) {
     logger.error('agent', `generateText error: ${e.message}`)
     throw e
@@ -574,6 +527,7 @@ export async function generateText(
 }
 
 // ─── Rate-limit / fallback detection from a thrown error ───────────────────
+
 function isRateLimitError(e: any): boolean {
   const errorMessage = e?.message || ''
   const statusCode = e?.status || e?.statusCode || e?.code
@@ -592,25 +546,9 @@ function isRateLimitError(e: any): boolean {
   )
 }
 
-// ─── Build a function_result step from a local execute result ──────────────
-// If the tool output carries an image (inspect_image_url), include it as an
-// image content block so the model can actually see it.
-function buildFunctionResult(callId: string, name: string, output: any) {
-  const blocks: any[] = []
-  if (output && typeof output === 'object' && output.data && typeof output.mimeType === 'string' && output.mimeType.startsWith('image/')) {
-    blocks.push({ type: 'text', text: `Image (${output.mimeType}, ${output.byteLength ?? output.data.length} bytes)` })
-    blocks.push({ type: 'image', data: output.data, mime_type: output.mimeType })
-  } else {
-    blocks.push({ type: 'text', text: typeof output === 'string' ? output : JSON.stringify(output) })
-  }
-  return { type: 'function_result', call_id: callId, name, result: blocks }
-}
-
-// ─── Main agent loop — Interactions API (stateless) ─────────────────────────
-// Stateless mode: we resend the full step history each turn. The server
-// returns authoritative steps (thought signatures + function_call ids); we
-// push them VERBATIM and append our function_result steps with call_id matching
-// the function_call.id. This is what makes the tool-result round-trip work.
+// ─── Main agent loop — AI SDK streamText with multi-step tools ──────────────
+// streamText with stopWhen handles the entire tool-calling loop internally.
+// We wrap it with model fallback + API key rotation for rate limit resilience.
 export async function runAgent(
   messages: AppMessage[],
   onChunk: (text: string) => void,
@@ -627,360 +565,235 @@ export async function runAgent(
   onInjectedMessages?: (messages: AppMessage[]) => void,
   sessionId?: number,
 ) {
+  let fallbackChain = options?.fallbackChain || (getApiTier().tier === 'pro' ? CHAT_MODEL_FALLBACK_PRO : CHAT_MODEL_FALLBACK_FREE)
+  // Respect user-selected model: move it to front of fallback chain
+  if (options?.model) {
+    const selectedId = MODEL_LABELS[options.model]
+    if (selectedId) {
+      fallbackChain = [selectedId, ...fallbackChain.filter(m => m !== selectedId)]
+    }
+  }
+  const maxSteps = options?.maxSteps ?? 40
+  const config = getAgentConfig(options)
+  const rawTools = toolsOverride || config.tools
+  const aiTools = toAITools(rawTools)
+  const system = systemPromptOverride || config.system
+  const thinkingLevel = config.thinkingLevel as 'minimal' | 'low' | 'medium' | 'high'
+
+  const userCount = messages.filter(m => m.role === 'user').length
+
+  // Reuse stored ModelMessages from last turn when possible (preserves
+  // reasoning signatures + tool-call round-trip integrity).
+  const stored = sessionId != null ? getChatSessionSteps(sessionId) : null
+  const lastMsg = messages[messages.length - 1]
+  let baseMessages: any[]
+
+  if (stored && stored.steps.length > 0 && stored.userCount === userCount - 1 && lastMsg?.role === 'user') {
+    const newUserMsgs = await toModelMessages([lastMsg])
+    baseMessages = [...stored.steps, ...newUserMsgs]
+    logger.info('agent', `reusing ${stored.steps.length} stored messages + ${newUserMsgs.length} new (userCount ${stored.userCount} → ${userCount})`)
+  } else if (stored && stored.steps.length > 0 && stored.userCount === userCount) {
+    baseMessages = stored.steps
+    logger.info('agent', `reusing ${stored.steps.length} stored messages (same userCount ${userCount})`)
+  } else {
+    baseMessages = await toModelMessages(messages)
+    if (stored) logger.info('agent', `history mismatch (stored userCount ${stored.userCount} vs ${userCount}), rebuilding from messages`)
+  }
+
   let fullText = ''
-  const fallbackChain = options?.fallbackChain || (getApiTier().tier === 'pro' ? CHAT_MODEL_FALLBACK_PRO : CHAT_MODEL_FALLBACK_FREE)
 
-  async function attemptWithModel(modelIndex: number, currentSteps: any[]): Promise<{ success: boolean; updatedSteps: any[] }> {
-    if (modelIndex >= fallbackChain.length) {
-      return { success: false, updatedSteps: currentSteps }
+  for (let i = 0; i < fallbackChain.length; i++) {
+    const currentModel = fallbackChain[i]
+    options?.onModelSwitch?.(currentModel, i + 1, fallbackChain.length)
+    logger.info('agent', `attempting with model: ${currentModel} (${i + 1}/${fallbackChain.length})`)
+
+    const requiredTier = currentModel === 'gemini-3.1-pro' ? 'pro' : undefined
+    if (!options?.skipRateLimitCheck && isModelExhaustedForAllKeys(currentModel, requiredTier)) {
+      logger.warn('agent', `model ${currentModel} exhausted for all keys, skipping`)
+      continue
     }
 
-    const currentModel = fallbackChain[modelIndex]
-    logger.info('agent', `attempting with model: ${currentModel} (${modelIndex + 1}/${fallbackChain.length})`)
+    const triedKeyIds = new Set<number | null>()
+    let keyAttempts = 0
 
-    let steps = currentSteps
-    let capturedApiKeyId: number | null = null
+    while (keyAttempts < 6) {
+      let apiKey: string
+      let apiKeyId: number | null
 
-    try {
-      const config = getAgentConfig({
-        ...options,
-        model: currentModel,
-        fallbackChain: fallbackChain.slice(modelIndex),
-        skipRateLimitCheck: false
-      })
-      const tools = toolsOverride || config.tools
-      const system = systemPromptOverride || config.system
-      const maxSteps = options?.maxSteps ?? 40
-      // CRITICAL: `ai` and `capturedApiKeyId` must be mutable so key rotation
-      // actually swaps the client + tracking. Previously these were const and
-      // rotation silently kept hitting the original key forever.
-      let ai = config.google
-      capturedApiKeyId = config.apiKeyId
-      const modelId = config.modelId
-      const thinkingLevel = config.thinkingLevel
-      const triedKeyIds = new Set<number | null>()
-      triedKeyIds.add(config.apiKeyId)
-      let keyAttempts = 0
-
-      const toolDeclarations = buildToolDeclarations(tools)
-      const executeMap = buildExecuteMap(tools)
-
-      let stepCount = 0
-
-      logger.info(
-        'agent',
-        `runAgent started with ${currentModel}, maxSteps=${maxSteps}, steps=${steps.length}, tools=${toolDeclarations.length}`,
-      )
-
-      while (stepCount < maxSteps) {
-        if (abortController?.signal.aborted) {
-          logger.info('agent', 'aborted before step')
-          onDone(fullText)
-          return { success: true, updatedSteps: steps }
+      if (keyAttempts === 0) {
+        const info = getApiKey(currentModel)
+        apiKey = info.apiKey
+        apiKeyId = info.apiKeyId
+      } else {
+        const excludeId = [...triedKeyIds].find(v => v != null && v !== apiKeyId)
+        const candidate = getAvailableApiKeyForModel(currentModel, requiredTier, excludeId as number | undefined)
+        if (!candidate) {
+          logger.warn('agent', `No more API keys available for ${currentModel}`)
+          break
         }
-
-        stepCount++
-        logger.info('agent', `step ${stepCount}/${maxSteps} — calling interactions.create with ${currentModel}`, {
-          tools: toolDeclarations.length,
-          steps: steps.length,
-        })
-
-        let modelSteps: any[] = []        // authoritative steps returned this turn
-        let functionResults: any[] = []   // function_result steps we produce
-        let hadFunctionCalls = false
-
-        try {
-          // Accumulators keyed by stream step index
-          const captured = new Map<number, any>()   // index → step under construction
-          const argBuf = new Map<number, string>()  // index → accumulated args string
-          const textBuf = new Map<number, string>() // index → accumulated text
-          let completedSteps: any[] | null = null   // from interaction.completed (if present)
-
-          const stream = await ai.interactions.create({
-            model: modelId,
-            store: false,
-            input: steps,
-            tools: toolDeclarations,
-            system_instruction: system,
-            generation_config: {
-              thinking_level: thinkingLevel,
-              thinking_summaries: 'auto',
-              temperature: 0.3,
-              max_output_tokens: 8192,
-            },
-            stream: true,
-          } as any)
-
-          for await (const event of (stream as any)) {
-            if (abortController?.signal.aborted) {
-              logger.info('agent', 'aborted during stream')
-              onDone(fullText)
-              return { success: true, updatedSteps: steps }
-            }
-
-            const et = event.event_type
-            if (et === 'error') {
-              const msg = event.error?.message || 'stream error'
-              throw Object.assign(new Error(msg), { status: event.error?.code })
-            }
-
-            if (et === 'interaction.completed') {
-              const evSteps = event.interaction?.steps
-              if (Array.isArray(evSteps) && evSteps.length > 0) completedSteps = evSteps
-              continue
-            }
-
-            if (et === 'step.start') {
-              captured.set(event.index, JSON.parse(JSON.stringify(event.step || {})))
-              const s = event.step || {}
-              if (s.type === 'function_call') argBuf.set(event.index, '')
-              if (s.type === 'model_output') textBuf.set(event.index, '')
-              continue
-            }
-
-            if (et === 'step.delta') {
-              const idx = event.index
-              const d = event.delta || {}
-              switch (d.type) {
-                case 'text': {
-                  fullText += d.text || ''
-                  textBuf.set(idx, (textBuf.get(idx) || '') + (d.text || ''))
-                  onChunk(d.text || '')
-                  break
-                }
-                case 'thought_summary': {
-                  const t = d.content?.text
-                  if (t) onReasoning?.(t)
-                  break
-                }
-                case 'thought_signature': {
-                  const ts = captured.get(idx)
-                  if (ts && ts.type === 'thought' && d.signature) {
-                    ts.signature = (ts.signature || '') + d.signature
-                  }
-                  break
-                }
-                case 'arguments_delta':
-                case 'arguments': {
-                  // SDK normalizes to arguments_delta.arguments; REST may use partial_arguments.
-                  argBuf.set(idx, (argBuf.get(idx) || '') + (d.arguments || d.partial_arguments || ''))
-                  break
-                }
-                default:
-                  // image/audio/annotation deltas — not needed for text agent loop
-                  break
-              }
-              continue
-            }
-
-            if (et === 'step.stop') {
-              const idx = event.index
-              const s = captured.get(idx)
-              if (!s) continue
-              if (s.type === 'model_output') {
-                const txt = textBuf.get(idx)
-                if (txt) s.content = [{ type: 'text', text: txt }]
-              }
-              if (s.type === 'function_call') {
-                // finalize arguments from the delta buffer
-                const buf = argBuf.get(idx)
-                if (buf) {
-                  try { s.arguments = JSON.parse(buf) } catch { /* keep step.start args */ }
-                }
-              }
-              continue
-            }
-          }
-
-          // Prefer server-authoritative steps; fall back to captured+merged.
-          modelSteps = completedSteps && completedSteps.length > 0
-            ? completedSteps
-            : Array.from(captured.values())
-
-          logger.info('agent', `stream done — ${modelSteps.length} steps (${completedSteps ? 'server' : 'captured'})`)
-        } catch (e: any) {
-          if (isRateLimitError(e)) {
-            logger.warn('agent', `${currentModel} hit rate limit for API key ${capturedApiKeyId}, rotating`, {
-              status: e?.status || e?.statusCode,
-              message: (e?.message || '').substring(0, 200),
-            })
-            try { markModelExhausted(currentModel, capturedApiKeyId) } catch (err) { logger.error('agent', 'failed to mark model as exhausted', err) }
-            triedKeyIds.add(capturedApiKeyId)
-            keyAttempts++
-            if (keyAttempts > 5) {
-              logger.warn('agent', `key-attempt cap (5) reached for ${currentModel}, trying next model`)
-              return { success: false, updatedSteps: steps }
-            }
-
-            const requiredTier = currentModel === 'gemini-3.1-pro' ? 'pro' : undefined
-            // The exhaustion table already excludes rate-limited keys; the
-            // exclude param + triedKeyIds guard against any re-offer.
-            const candidate = getAvailableApiKeyForModel(currentModel, requiredTier, capturedApiKeyId ?? undefined)
-            if (candidate && !triedKeyIds.has(candidate.id)) {
-              logger.info('agent', `rotating to API key ${candidate.id} for ${currentModel}, retrying`)
-              ai = new GoogleGenAI({ apiKey: candidate.api_key })
-              capturedApiKeyId = candidate.id
-              triedKeyIds.add(candidate.id)
-              stepCount--
-              continue
-            }
-            logger.warn('agent', `No more API keys available for ${currentModel}, trying next model`)
-            return { success: false, updatedSteps: steps }
-          }
-
-          // 400 / INVALID_ARGUMENT — this is a malformed request, NOT a key
-          // problem. Rotating keys cannot fix it (and previously caused an
-          // infinite loop). Surface the real detail, then retry once with
-          // text-only history (drops stale thought signatures / fragile ids);
-          // if that also fails, fall through to the next model.
-          const status = e?.status || e?.statusCode || e?.code
-          const errorStatus = e?.error?.status || e?.error?.code
-          if (status === 400 || errorStatus === 'INVALID_ARGUMENT' || status === 'FAILED_PRECONDITION' || status === 3) {
-            logger.error('agent', '400 INVALID_ARGUMENT — full error detail', {
-              currentModel,
-              stepsCount: steps.length,
-              status,
-              errorStatus,
-              message: (e?.message || '').substring(0, 500),
-              body: typeof e?.body === 'string' ? e.body.slice(0, 1000) : tryStringifyError(e),
-              cause: String(e?.cause || '').slice(0, 500),
-            })
-            if (hasNonTextSteps(steps)) {
-              steps = stripStepsToTextOnly(steps)
-              logger.warn('agent', `retrying ${currentModel} with text-only history (${steps.length} steps) after 400`)
-              stepCount--
-              continue
-            }
-            logger.warn('agent', '400 persists after text-only retry, switching model')
-            return { success: false, updatedSteps: steps }
-          }
-
-          logger.warn('agent', `${currentModel} encountered error, trying next model`, {
-            error: (e?.message || '').substring(0, 200), status
-          })
-          return { success: false, updatedSteps: steps }
-        }
-
-        // Push the model's returned steps verbatim (preserves thought signatures
-        // and function_call ids — required for the next round-trip).
-        steps.push(...modelSteps)
-
-        // Execute any function_call steps and build matching function_result steps.
-        for (const s of modelSteps) {
-          if (s.type !== 'function_call') continue
-          hadFunctionCalls = true
-          onToolCall(s.name, s.arguments)
-          logger.info('agent', `tool-call: ${s.name}`, s.arguments)
-          let output: any
-          try {
-            const fn = executeMap.get(s.name)
-            output = fn ? await fn(s.arguments || {}) : { error: `Tool ${s.name} has no execute` }
-          } catch (err: any) {
-            output = { error: err?.message || String(err) }
-          }
-          const fr = buildFunctionResult(s.id, s.name, output)
-          functionResults.push(fr)
-
-          // UI feedback (truncate large non-social results, drop raw image bytes)
-          const isImageTool = s.name === 'inspect_image_url'
-          const truncateLimit = SOCIAL_FETCH_TOOLS.has(s.name) || isImageTool ? Infinity : 15000
-          let outputForUi: any = output
-          if (isImageTool && outputForUi?.data) {
-            outputForUi = { ...outputForUi, data: undefined, _note: 'Image sent to model via function_result image block' }
-          }
-          const resultStr = JSON.stringify(outputForUi)
-          const truncated = resultStr.length > truncateLimit
-            ? resultStr.slice(0, truncateLimit) + '...[truncated]'
-            : outputForUi
-          onToolResult(s.name, truncated)
-          logger.info('agent', `tool-result: ${s.name}`)
-        }
-
-        if (functionResults.length > 0) steps.push(...functionResults)
-
-        logger.info('agent', `step ${stepCount} done — toolCalls=${hadFunctionCalls}, textLen=${fullText.length}`)
-
-        const injected = drainInjectedMessages?.() ?? []
-        if (injected.length > 0) {
-          const injectedSteps = await toInteractionSteps(injected)
-          steps.push(...injectedSteps)
-          onInjectedMessages?.(injected)
-          logger.info('agent', `injected ${injected.length} message(s) into active run`)
-          hadFunctionCalls = true // force another loop iteration to process injected input
-        }
-
-        if (!hadFunctionCalls) {
-          logger.info('agent', `done — ${fullText.length} chars total`)
-          onDone(fullText)
-          return { success: true, updatedSteps: steps }
-        }
+        apiKey = candidate.api_key
+        apiKeyId = candidate.id
+        updateApiKeyLastUsed(apiKeyId)
       }
 
-      logger.warn('agent', `reached max steps (${maxSteps})`)
-      onDone(fullText + '\n\n[Reached max tool call steps]')
-      return { success: true, updatedSteps: steps }
-    } catch (e: any) {
-      if (isRateLimitError(e)) {
-        try { markModelExhausted(currentModel, capturedApiKeyId) } catch (err) { logger.error('agent', 'failed to mark exhausted (outer)', err) }
-        logger.warn('agent', `${currentModel} hit error at attempt level, trying next model`, {
-          error: (e?.message || '').substring(0, 200)
-        })
-        return { success: false, updatedSteps: steps }
-      }
-      if (abortController?.signal.aborted) {
-        logger.info('agent', 'aborted by user')
-        onDone(fullText)
-        return { success: true, updatedSteps: steps }
-      }
-      logger.warn('agent', `${currentModel} unexpected error, trying next model`, {
-        error: (e?.message || '').substring(0, 200)
-      })
-      return { success: false, updatedSteps: steps }
-    }
-  }
-
-  try {
-    const userCount = messages.filter(m => m.role === 'user').length
-    let currentSteps: any[]
-
-    // Reuse the authoritative server steps persisted last turn (preserves
-    // thought signatures + function_call ids + function_result payloads) when
-    // the incoming history is a clean append or a regenerate of the last turn.
-    const stored = sessionId != null ? getChatSessionSteps(sessionId) : null
-    const lastMsg = messages[messages.length - 1]
-    if (stored && stored.steps.length > 0 && stored.userCount === userCount - 1 && lastMsg?.role === 'user') {
-      // Clean append: add only the new user message to the stored steps.
-      const newUserSteps = await toInteractionSteps([lastMsg])
-      currentSteps = [...stored.steps, ...newUserSteps]
-      logger.info('agent', `reusing ${stored.steps.length} stored steps + ${newUserSteps.length} new (userCount ${stored.userCount} → ${userCount})`)
-    } else if (stored && stored.steps.length > 0 && stored.userCount === userCount) {
-      // Regenerate / retry of the latest turn: reuse stored steps verbatim.
-      currentSteps = stored.steps
-      logger.info('agent', `reusing ${stored.steps.length} stored steps (same userCount ${userCount})`)
-    } else {
-      // First turn, or history was edited → rebuild from messages.
-      currentSteps = await toInteractionSteps(messages)
-      if (stored) logger.info('agent', `history mismatch (stored userCount ${stored.userCount} vs ${userCount}), rebuilding from messages`)
-    }
-
-    for (let i = 0; i < fallbackChain.length; i++) {
-      const { success, updatedSteps } = await attemptWithModel(i, currentSteps)
-      if (success) {
-        // Persist the authoritative final steps for next turn.
-        if (sessionId != null) {
-          try { updateChatSessionSteps(sessionId, updatedSteps, userCount) } catch (e) { logger.error('agent', 'failed to persist steps', e) }
-        }
-        return
-      }
-      currentSteps = updatedSteps
+      triedKeyIds.add(apiKeyId)
+      keyAttempts++
       fullText = ''
-      logger.info('agent', `model ${fallbackChain[i]} failed, trying next model with ${currentSteps.length} steps`)
+
+      try {
+        const result = streamText({
+          model: createGoogle({ apiKey }).interactions(currentModel),
+          system,
+          messages: baseMessages,
+          tools: aiTools,
+          stopWhen: isStepCount(maxSteps),
+          temperature: 0.3,
+          maxOutputTokens: 8192,
+          maxRetries: 0,
+          timeout: { chunkMs: 120000 },
+          ...(abortController ? { abortSignal: abortController.signal } : {}),
+          providerOptions: {
+            google: {
+              store: false,
+              thinkingLevel: thinkingLevel,
+              thinkingSummaries: 'auto',
+            },
+          },
+          prepareStep: ({ stepNumber, messages: stepMessages }) => {
+            if (stepNumber > 0 && drainInjectedMessages) {
+              const injected = drainInjectedMessages()
+              if (injected.length > 0) {
+                logger.info('agent', `injected ${injected.length} message(s) into active run`)
+                onInjectedMessages?.(injected)
+                return { messages: [...stepMessages, ...toModelMessagesSync(injected)] }
+              }
+            }
+          },
+          onError: ({ error }) => {
+            logger.error('agent', `stream error: ${(error as Error)?.message || error}`)
+          },
+        })
+
+        let streamError: any = null
+
+        for await (const part of result.stream) {
+          if (abortController?.signal.aborted) {
+            logger.info('agent', 'aborted during stream')
+            onDone(fullText)
+            return
+          }
+
+          switch (part.type) {
+            case 'text-delta':
+              fullText += part.text
+              onChunk(part.text)
+              break
+            case 'reasoning-delta':
+              onReasoning?.(part.text)
+              break
+            case 'tool-call':
+              onToolCall(part.toolName, part.input)
+              logger.info('agent', `tool-call: ${part.toolName}`, part.input)
+              break
+            case 'tool-result': {
+              const isImageTool = part.toolName === 'inspect_image_url'
+              const truncateLimit = SOCIAL_FETCH_TOOLS.has(part.toolName) || isImageTool ? Infinity : 15000
+              let outputForUi: any = part.output
+              if (isImageTool && outputForUi?.data) {
+                outputForUi = { ...outputForUi, data: undefined, _note: 'Image sent to model via toModelOutput' }
+              }
+              const resultStr = JSON.stringify(outputForUi)
+              const truncated = resultStr.length > truncateLimit
+                ? resultStr.slice(0, truncateLimit) + '...[truncated]'
+                : outputForUi
+              onToolResult(part.toolName, truncated)
+              logger.info('agent', `tool-result: ${part.toolName}`)
+              break
+            }
+            case 'error':
+              streamError = part.error
+              break
+          }
+        }
+
+        if (streamError) throw streamError
+
+        logger.info('agent', `done — ${fullText.length} chars total`)
+
+        // Persist accumulated messages for next turn's round-trip.
+        if (sessionId != null) {
+          try {
+            const responseMsgs = await result.responseMessages
+            updateChatSessionSteps(sessionId, [...baseMessages, ...responseMsgs], userCount)
+          } catch (e) { logger.error('agent', 'failed to persist steps', e) }
+        }
+
+        onDone(fullText)
+        return
+
+      } catch (e: any) {
+        if (abortController?.signal.aborted) {
+          logger.info('agent', 'aborted by user')
+          onDone(fullText)
+          return
+        }
+
+        if (isRateLimitError(e)) {
+          logger.warn('agent', `${currentModel} hit rate limit for API key ${apiKeyId}, rotating`, {
+            status: e?.status || e?.statusCode,
+            message: (e?.message || '').substring(0, 200),
+          })
+          try { markModelExhausted(currentModel, apiKeyId) } catch (err) { logger.error('agent', 'failed to mark model as exhausted', err) }
+          continue
+        }
+
+        logger.warn('agent', `${currentModel} encountered error, trying next model`, {
+          error: (e?.message || '').substring(0, 200),
+          status: e?.status || e?.statusCode,
+        })
+        break
+      }
     }
 
-    logger.error('agent', 'all models in fallback chain failed')
-    onError('All available models failed or hit rate limits. Please try again later or upgrade your API tier.')
-  } catch (e: any) {
-    logger.error('agent', `unexpected error: ${e.message}`)
-    onError(e.message || 'An unexpected error occurred')
+    logger.info('agent', `model ${currentModel} failed, trying next model`)
   }
+
+  logger.error('agent', 'all models in fallback chain failed')
+  onError('All available models failed or hit rate limits. Please try again later or upgrade your API tier.')
+}
+
+// ponytail: sync version of toModelMessages for prepareStep (no image saving —
+// injected messages already have their images handled by the UI layer).
+function toModelMessagesSync(messages: AppMessage[]): any[] {
+  const result: any[] = []
+  for (const msg of messages) {
+    if (msg.role === 'system') continue
+    if (msg.role === 'user') {
+      const content: any[] = []
+      if (msg.content) content.push({ type: 'text', text: msg.content })
+      for (const part of msg.parts || []) {
+        if (part.inlineData?.data) {
+          content.push({ type: 'file', mediaType: part.inlineData.mimeType, data: part.inlineData.data })
+        } else if (part.text) {
+          content.push({ type: 'text', text: part.text })
+        }
+      }
+      if (content.length > 0) {
+        result.push({ role: 'user', content: content.length === 1 && content[0].type === 'text' ? content[0].text : content })
+      }
+      continue
+    }
+    if (msg.role === 'assistant') {
+      const content: any[] = []
+      if (msg.content) content.push({ type: 'text', text: msg.content })
+      for (const tc of msg.tool_calls || []) {
+        let input: any = {}
+        try { input = JSON.parse(tc.function?.arguments || '{}') } catch { input = {} }
+        content.push({ type: 'tool-call', toolCallId: tc.id, toolName: tc.function?.name || '', input })
+      }
+      if (content.length > 0) result.push({ role: 'assistant', content })
+      continue
+    }
+  }
+  return result
 }

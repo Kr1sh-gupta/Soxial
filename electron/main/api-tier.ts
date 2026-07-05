@@ -1,25 +1,19 @@
-import { GoogleGenAI } from '@google/genai'
-import { getApiKey } from './agent'
+import { generateText } from 'ai'
+import { createGoogle } from '@ai-sdk/google'
 import { getApiTier, setApiTier, getApiKeys, updateApiKeyTier, getProfile } from './db'
 import { logger } from './log'
 
 async function testApiKeyTier(apiKey: string): Promise<'free' | 'pro'> {
-  const ai = new GoogleGenAI({ apiKey })
-
   try {
     // Minimal probe: if gemini-3.1-pro succeeds, the key is pro tier.
     // A 429 / quota error means free tier.
-    const interaction = await ai.interactions.create({
-      model: 'gemini-3.1-pro',
-      store: false,
-      input: [{ type: 'user_input', content: [{ type: 'text', text: 'Respond with just "OK"' }] }],
-      generation_config: { max_output_tokens: 2 },
-    } as any)
-
-    if ((interaction as any).output_text && (interaction as any).output_text.trim()) {
-      return 'pro'
-    }
-    return 'free'
+    await generateText({
+      model: createGoogle({ apiKey }).interactions('gemini-3.1-pro'),
+      prompt: 'Respond with just "OK"',
+      maxOutputTokens: 2,
+      maxRetries: 0,
+    })
+    return 'pro'
   } catch (error: any) {
     const errorMessage = error?.message || ''
     const status = error?.status || error?.statusCode || error?.code

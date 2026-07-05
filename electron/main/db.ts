@@ -292,6 +292,19 @@ function initSchema(db: Database.Database) {
   if (!sessionCols.some((c: any) => c.name === 'steps_user_count')) {
     db.exec('ALTER TABLE chat_sessions ADD COLUMN steps_user_count INTEGER DEFAULT 0')
   }
+
+  // Migration: sync primary API key from user_profile to api_keys table
+  // so it participates in uniform rotation, tier detection, and exhaustion tracking.
+  const existingProfile = db.prepare('SELECT gemini_api_key FROM user_profile WHERE id = 1').get() as any
+  if (existingProfile?.gemini_api_key) {
+    const exists = db.prepare('SELECT id FROM api_keys WHERE api_key = ? AND is_active = 1')
+      .get(existingProfile.gemini_api_key) as any
+    if (!exists) {
+      db.prepare("INSERT INTO api_keys (name, api_key, provider) VALUES ('Primary', ?, 'google')")
+        .run(existingProfile.gemini_api_key)
+      logger.info('db', 'synced primary API key to api_keys table')
+    }
+  }
 }
 
 export function getChatSessionSteps(sessionId: number): { steps: any[]; userCount: number } | null {
@@ -313,6 +326,16 @@ export function getProfile() {
   return getDb().prepare('SELECT * FROM user_profile WHERE id = 1').get() as any
 }
 
+export function syncPrimaryKeyToApiKeys(apiKey: string): void {
+  const db = getDb()
+  const existing = db.prepare('SELECT id FROM api_keys WHERE api_key = ? AND is_active = 1').get(apiKey) as any
+  if (existing) {
+    db.prepare("UPDATE api_keys SET name = 'Primary' WHERE id = ?").run(existing.id)
+    return
+  }
+  db.prepare("INSERT INTO api_keys (name, api_key, provider) VALUES ('Primary', ?, 'google')").run(apiKey)
+}
+
 export function updateProfile(data: Record<string, any>) {
   const db = getDb()
   const existing = db.prepare('SELECT COUNT(*) as c FROM user_profile WHERE id = 1').get() as any
@@ -323,6 +346,9 @@ export function updateProfile(data: Record<string, any>) {
   const sets = keys.map(k => `${k} = @${k}`).join(', ')
   if (sets) {
     db.prepare(`UPDATE user_profile SET ${sets} WHERE id = 1`).run(data)
+  }
+  if (data.gemini_api_key) {
+    syncPrimaryKeyToApiKeys(data.gemini_api_key)
   }
   return getProfile()
 }

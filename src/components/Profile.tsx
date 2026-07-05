@@ -29,7 +29,7 @@ export default function Profile({ profile, onBack }: { profile: any; onBack: () 
         targets: targets as any[],
         voice: voice as any[],
       })
-      setApiKeys(keys as any[])
+      setApiKeys((keys as any[]).filter(k => k.name !== 'Primary'))
     })
   }, [])
 
@@ -78,7 +78,7 @@ export default function Profile({ profile, onBack }: { profile: any; onBack: () 
     try {
       await window.api.addApiKey(newKeyName.trim(), newKeyKey.trim())
       const keys = await window.api.getApiKeys()
-      setApiKeys(keys as any[])
+      setApiKeys((keys as any[]).filter(k => k.name !== 'Primary'))
       setNewKeyName('')
       setNewKeyKey('')
       setShowAddKeyForm(false)
@@ -94,7 +94,7 @@ export default function Profile({ profile, onBack }: { profile: any; onBack: () 
     try {
       await window.api.removeApiKey(id)
       const keys = await window.api.getApiKeys()
-      setApiKeys(keys as any[])
+      setApiKeys((keys as any[]).filter(k => k.name !== 'Primary'))
     } catch (err) {
       console.error('Failed to remove API key:', err)
       alert('Failed to remove API key. Please try again.')
@@ -106,7 +106,7 @@ export default function Profile({ profile, onBack }: { profile: any; onBack: () 
     try {
       await window.api.detectApiTier()
       const keys = await window.api.getApiKeys()
-      setApiKeys(keys as any[])
+      setApiKeys((keys as any[]).filter(k => k.name !== 'Primary'))
     } catch (err) {
       console.error('Failed to detect API tier:', err)
       alert('Failed to detect API tier. Please try again.')
