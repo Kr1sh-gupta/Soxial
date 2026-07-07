@@ -466,11 +466,16 @@ async function toModelMessages(messages: AppMessage[]): Promise<any[]> {
       for (const tc of msg.tool_calls || []) {
         let input: any = {}
         try { input = JSON.parse(tc.function?.arguments || '{}') } catch { input = {} }
+        // Inject the documented sentinel so the AI SDK doesn't warn about missing
+        // thoughtSignatures when replaying tool calls rebuilt from app message format.
+        // These messages were never issued by a thinking model turn, so no real
+        // signature exists — the sentinel tells Gemini to skip the validator.
         content.push({
           type: 'tool-call',
           toolCallId: tc.id,
           toolName: tc.function?.name || '',
           input,
+          providerOptions: { google: { thoughtSignature: 'skip_thought_signature_validator' } },
         })
       }
       if (content.length > 0) {
@@ -661,15 +666,29 @@ export async function runAgent(
   let baseMessages: any[]
 
   if (stored && stored.steps.length > 0 && stored.userCount === userCount - 1 && lastMsg?.role === 'user') {
+    // Normal case: stored has the previous turn, append the new user message.
     const newUserMsgs = await toModelMessages([lastMsg])
     baseMessages = [...stored.steps, ...newUserMsgs]
     logger.info('agent', `reusing ${stored.steps.length} stored messages + ${newUserMsgs.length} new (userCount ${stored.userCount} → ${userCount})`)
   } else if (stored && stored.steps.length > 0 && stored.userCount === userCount) {
+    // Retry / same-turn re-run: messages haven't advanced, reuse stored as-is.
     baseMessages = stored.steps
     logger.info('agent', `reusing ${stored.steps.length} stored messages (same userCount ${userCount})`)
+  } else if (stored && stored.steps.length > 0 && stored.userCount < userCount) {
+    // Drift case: stored is behind by more than 1 turn (e.g. session resumed after
+    // an offline gap). Use stored steps as the base — they carry real thoughtSignatures —
+    // and append only the messages that come after what's already stored. This avoids
+    // a full toModelMessages() rebuild which would strip all providerOptions.
+    const newAppMsgs = messages.filter(m => m.role === 'user').slice(stored.userCount)
+    const newModelMsgs = newAppMsgs.length > 0 ? await toModelMessages(newAppMsgs) : []
+    baseMessages = [...stored.steps, ...newModelMsgs]
+    logger.info('agent', `partial reuse: ${stored.steps.length} stored + ${newModelMsgs.length} new msgs (stored userCount ${stored.userCount} → ${userCount})`)
   } else {
+    // No stored steps at all — full rebuild. All tool-call parts will carry the
+    // skip_thought_signature_validator sentinel (injected by toModelMessages) to
+    // suppress spurious warnings from the AI SDK.
     baseMessages = await toModelMessages(messages)
-    if (stored) logger.info('agent', `history mismatch (stored userCount ${stored.userCount} vs ${userCount}), rebuilding from messages`)
+    if (stored) logger.info('agent', `no stored steps, full rebuild (stored userCount ${stored.userCount} vs ${userCount})`)
   }
 
   let modelMessages = baseMessages
@@ -916,7 +935,10 @@ function toModelMessagesSync(messages: AppMessage[]): any[] {
       for (const tc of msg.tool_calls || []) {
         let input: any = {}
         try { input = JSON.parse(tc.function?.arguments || '{}') } catch { input = {} }
-        content.push({ type: 'tool-call', toolCallId: tc.id, toolName: tc.function?.name || '', input })
+        // Same sentinel as toModelMessages — injected messages rebuilt from AppMessage
+        // format never carry real signatures.
+        content.push({ type: 'tool-call', toolCallId: tc.id, toolName: tc.function?.name || '', input,
+          providerOptions: { google: { thoughtSignature: 'skip_thought_signature_validator' } } })
       }
       if (content.length > 0) result.push({ role: 'assistant', content })
       continue
