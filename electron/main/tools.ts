@@ -11,6 +11,8 @@ import {
   persistSocialToolResult,
   MAX_SOCIAL_ITEMS,
   getSinceDate,
+  compactTwitterForModel,
+  compactRedditForModel,
 } from './social-content'
 
 export function createTools(opts?: { defaultMax?: number }) {
@@ -109,14 +111,14 @@ export function createTools(opts?: { defaultMax?: number }) {
     },
 
     read_social_content: {
-      description: `Read auto-saved posts/replies/comments from the social_content archive (up to ${MAX_SOCIAL_ITEMS} per type, 2-month lookback). Populated automatically during onboarding and whenever twitter_user_posts, twitter_replies, rdt_user_posts, or rdt_user_comments run.`,
+      description: `Read auto-saved posts/replies/comments from the social_content archive (up to ${MAX_SOCIAL_ITEMS} per type, 2-month lookback). Populated automatically during onboarding and whenever twitter_user_posts, twitter_replies, reddit_user_posts, or reddit_user_comments run.`,
       parameters: z.object({
         platform: z.enum(['twitter', 'reddit']).optional(),
         content_type: z.enum(['post', 'reply', 'comment']).optional(),
         author_handle: z.string().optional(),
         subreddit: z.string().optional(),
         limit: z.number().optional().describe('Max rows (default 50, max 200)'),
-        include_raw: z.boolean().optional().describe('Include full CLI payload per item (large)'),
+        include_raw: z.boolean().optional().describe('Include the full raw payload per item (large)'),
         summary_only: z.boolean().optional().describe('Return counts by platform/type instead of rows'),
       }),
       execute: async ({ summary_only, ...opts }) => {
@@ -524,7 +526,7 @@ export function createTools(opts?: { defaultMax?: number }) {
     },
 
     twitter_status: {
-      description: 'Check Twitter/X authentication status. Verifies browser cookie session.',
+      description: 'Check Twitter/X authentication status. Verifies your X session.',
       parameters: z.object({}),
       execute: async () => ensureTwitterAuth()
     },
@@ -566,7 +568,7 @@ export function createTools(opts?: { defaultMax?: number }) {
         if (exclude) args.push('--exclude', exclude)
         if (filter) args.push('--filter')
         args.push('-n', String(max || defaultMax))
-        return runTwitterCli(args)
+        return compactTwitterForModel(await runTwitterCli(args, { compact: false }))
       }
     },
 
@@ -584,11 +586,11 @@ export function createTools(opts?: { defaultMax?: number }) {
       }),
       execute: async ({ handle, max }) => {
         const limit = max || defaultMax
-        const result = limit < MAX_SOCIAL_ITEMS
-          ? await runTwitterCli(['user-posts', handle, '--max', String(limit), '--json'])
+        const raw = limit < MAX_SOCIAL_ITEMS
+          ? await runTwitterCli(['user-posts', handle, '--max', String(limit), '--json'], { compact: false })
           : await fetchTwitterUserPosts(handle)
-        const persist = persistSocialToolResult('twitter_user_posts', { handle }, result)
-        return { ...result, _persist: persist }
+        const persist = persistSocialToolResult('twitter_user_posts', { handle }, raw)
+        return { ...compactTwitterForModel(raw), _persist: persist }
       }
     },
 
@@ -601,11 +603,11 @@ export function createTools(opts?: { defaultMax?: number }) {
       execute: async ({ handle, max }) => {
         const since = getSinceDate()
         const limit = max || defaultMax
-        const result = limit < MAX_SOCIAL_ITEMS
-          ? await runTwitterCli(['search', `from:${handle} filter:replies`, '--since', since, '-n', String(limit), '--json'])
+        const raw = limit < MAX_SOCIAL_ITEMS
+          ? await runTwitterCli(['search', `from:${handle} filter:replies`, '--since', since, '-n', String(limit), '--json'], { compact: false })
           : await fetchTwitterReplies(handle)
-        const persist = persistSocialToolResult('twitter_replies', { handle }, result)
-        return { ...result, _persist: persist }
+        const persist = persistSocialToolResult('twitter_replies', { handle }, raw)
+        return { ...compactTwitterForModel(raw), _persist: persist }
       }
     },
 
@@ -650,7 +652,7 @@ export function createTools(opts?: { defaultMax?: number }) {
         const args = ['likes', screenName, '--json']
         if (filter) args.push('--filter')
         args.push('-n', String(max || defaultMax))
-        return runTwitterCli(args)
+        return compactTwitterForModel(await runTwitterCli(args, { compact: false }))
       }
     },
 
@@ -709,7 +711,7 @@ export function createTools(opts?: { defaultMax?: number }) {
         if (type) args.push('-t', type)
         if (filter) args.push('--filter')
         args.push('-n', String(max || defaultMax))
-        return runTwitterCli(args)
+        return compactTwitterForModel(await runTwitterCli(args, { compact: false }))
       }
     },
 
@@ -750,7 +752,7 @@ export function createTools(opts?: { defaultMax?: number }) {
         const args = ['list', list_id, '--json']
         if (filter) args.push('--filter')
         args.push('-n', String(max || defaultMax))
-        return runTwitterCli(args)
+        return compactTwitterForModel(await runTwitterCli(args, { compact: false }))
       }
     },
 
@@ -805,7 +807,7 @@ export function createTools(opts?: { defaultMax?: number }) {
           const args = ['bookmarks', '--json']
           if (filter) args.push('--filter')
           args.push('-n', String(max || defaultMax))
-          return runTwitterCli(args)
+          return compactTwitterForModel(await runTwitterCli(args, { compact: false }))
         }
         if (!tweet_id) return { error: 'tweet_id required for save/remove' }
         const cmd = action === 'remove' ? 'unbookmark' : 'bookmark'
@@ -842,7 +844,7 @@ export function createTools(opts?: { defaultMax?: number }) {
       }
     },
 
-    rdt_search: {
+    reddit_search: {
       description: 'Search Reddit for posts. Use subreddit parameter to browse specific subreddits (e.g., subreddit: "frontend"). Query can be empty when using subreddit parameter to browse all posts in that subreddit.',
       parameters: z.object({
         query: z.string().optional().describe('Search keywords (can be empty when using subreddit parameter)'),
@@ -852,16 +854,16 @@ export function createTools(opts?: { defaultMax?: number }) {
         max: z.number().optional()
       }),
       execute: async ({ query, subreddit, sort, time, max }) => {
-        const args = ['search', (query || ''), '--json', '-c']
+        const args = ['search', (query || ''), '--json']
         if (subreddit) args.push('-r', subreddit)
         if (sort) args.push('-s', sort)
         if (time) args.push('-t', time)
         args.push('-n', String(max || defaultMax))
-        return runCli('rdt', args)
+        return compactRedditForModel(await runCli('rdt', args))
       }
     },
 
-    rdt_sub: {
+    reddit_sub: {
       description: 'Browse a subreddit for posts. Requires subreddit parameter (e.g., "frontend", "webdev").',
       parameters: z.object({
         subreddit: z.string().describe('Subreddit name without r/ prefix (e.g., "frontend", "webdev")'),
@@ -874,15 +876,15 @@ export function createTools(opts?: { defaultMax?: number }) {
           return { ok: false, data: null, error: 'subreddit parameter is required (e.g., "frontend", "webdev")' }
         }
         
-        const args = ['sub', subreddit, '--json', '-c']
+        const args = ['sub', subreddit, '--json']
         if (sort) args.push('-s', sort)
         if (time) args.push('-t', time)
         args.push('-n', String(max || defaultMax))
-        return runCli('rdt', args)
+        return compactRedditForModel(await runCli('rdt', args))
       }
     },
 
-    rdt_read: {
+    reddit_read: {
       description: 'Read a Reddit post and its comments.',
       parameters: z.object({
         post_id: z.string(),
@@ -899,7 +901,7 @@ export function createTools(opts?: { defaultMax?: number }) {
       }
     },
 
-    rdt_user_posts: {
+    reddit_user_posts: {
       description: `Fetch recent posts from a Reddit user. Returns up to ${MAX_SOCIAL_ITEMS} posts covering at least ${2} months when available.`,
       parameters: z.object({
         username: z.string(),
@@ -907,15 +909,15 @@ export function createTools(opts?: { defaultMax?: number }) {
       }),
       execute: async ({ username, max }) => {
         const limit = max || defaultMax
-        const result = limit < MAX_SOCIAL_ITEMS
-          ? await runCli('rdt', ['user-posts', username, '--json', '-c', '-n', String(limit)])
+        const raw = limit < MAX_SOCIAL_ITEMS
+          ? await runCli('rdt', ['user-posts', username, '--json', '-n', String(limit)])
           : await fetchRedditUserPosts(username)
-        const persist = persistSocialToolResult('rdt_user_posts', { username }, result)
-        return { ...result, _persist: persist }
+        const persist = persistSocialToolResult('reddit_user_posts', { username }, raw)
+        return { ...compactRedditForModel(raw), _persist: persist }
       }
     },
 
-    rdt_user_comments: {
+    reddit_user_comments: {
       description: `Fetch recent comments from a Reddit user. Returns up to ${MAX_SOCIAL_ITEMS} comments covering at least ${2} months when available.`,
       parameters: z.object({
         username: z.string(),
@@ -923,21 +925,21 @@ export function createTools(opts?: { defaultMax?: number }) {
       }),
       execute: async ({ username, max }) => {
         const limit = max || defaultMax
-        const result = limit < MAX_SOCIAL_ITEMS
-          ? await runCli('rdt', ['user-comments', username, '--json', '-c', '-n', String(limit)])
+        const raw = limit < MAX_SOCIAL_ITEMS
+          ? await runCli('rdt', ['user-comments', username, '--json', '-n', String(limit)])
           : await fetchRedditUserComments(username)
-        const persist = persistSocialToolResult('rdt_user_comments', { username }, result)
-        return { ...result, _persist: persist }
+        const persist = persistSocialToolResult('reddit_user_comments', { username }, raw)
+        return { ...compactRedditForModel(raw), _persist: persist }
       }
     },
 
-    rdt_login: {
-      description: 'Extract Reddit browser cookies for authentication (rdt login). Run when whoami/status fails or before write actions.',
+    reddit_login: {
+      description: 'Verify or refresh the Reddit connection. Run when whoami/status fails or before write actions.',
       parameters: z.object({}),
       execute: async () => ensureRdtAuth()
     },
 
-    rdt_whoami: {
+    reddit_whoami: {
       description: 'Check Reddit authentication status and karma. Uses session when logged in; otherwise falls back to public profile data.',
       parameters: z.object({}),
       execute: async () => {
@@ -946,7 +948,7 @@ export function createTools(opts?: { defaultMax?: number }) {
       }
     },
 
-    rdt_feed: {
+    reddit_feed: {
       description: 'Browse Reddit home feed (requires login).',
       parameters: z.object({
         max: z.number().optional(),
@@ -955,15 +957,15 @@ export function createTools(opts?: { defaultMax?: number }) {
       }),
       execute: async ({ max, subs_only, max_subs }) => {
         await ensureRdtAuth()
-        const args = ['feed', '--json', '-c']
+        const args = ['feed', '--json']
         if (subs_only) args.push('--subs-only')
         if (max_subs) args.push('--max-subs', String(max_subs))
         args.push('-n', String(max || defaultMax))
-        return runCli('rdt', args)
+        return compactRedditForModel(await runCli('rdt', args))
       }
     },
 
-    rdt_comment: {
+    reddit_comment: {
       description: 'Comment on a Reddit post. REQUIRES user approval. Has built-in rate-limit delay (1.5-4s).',
       parameters: z.object({
         post_id: z.string().optional().describe('Post ID to comment on'),
@@ -980,7 +982,7 @@ export function createTools(opts?: { defaultMax?: number }) {
       }
     },
 
-    rdt_upvote: {
+    reddit_upvote: {
       description: 'Upvote, downvote, or remove vote on a Reddit post. REQUIRES user approval.',
       parameters: z.object({
         post_id: z.string(),
@@ -995,7 +997,7 @@ export function createTools(opts?: { defaultMax?: number }) {
       }
     },
 
-    rdt_save: {
+    reddit_save: {
       description: 'Save or unsave a Reddit post for later reference.',
       parameters: z.object({
         post_id: z.string(),
@@ -1009,7 +1011,7 @@ export function createTools(opts?: { defaultMax?: number }) {
       }
     },
 
-    rdt_subscribe: {
+    reddit_subscribe: {
       description: 'Subscribe or unsubscribe from a subreddit. REQUIRES user approval.',
       parameters: z.object({
         subreddit: z.string(),
@@ -1023,7 +1025,7 @@ export function createTools(opts?: { defaultMax?: number }) {
       }
     },
 
-    rdt_sub_info: {
+    reddit_sub_info: {
       description: 'Get subreddit info — subscribers, description, rules. Use before engagement strategy decisions.',
       parameters: z.object({
         subreddit: z.string()
@@ -1031,45 +1033,45 @@ export function createTools(opts?: { defaultMax?: number }) {
       execute: async ({ subreddit }) => runCli('rdt', ['sub-info', subreddit, '--json'])
     },
 
-    rdt_popular: {
+    reddit_popular: {
       description: 'Browse Reddit popular feed — trending posts across all subreddits.',
       parameters: z.object({ max: z.number().optional() }),
       execute: async ({ max }) => {
-        const args = ['popular', '--json', '-c', '-n', String(max || defaultMax)]
-        return runCli('rdt', args)
+        const args = ['popular', '--json', '-n', String(max || defaultMax)]
+        return compactRedditForModel(await runCli('rdt', args))
       }
     },
 
-    rdt_all: {
+    reddit_all: {
       description: 'Browse /r/all — posts from across Reddit.',
       parameters: z.object({ max: z.number().optional() }),
       execute: async ({ max }) => {
-        const args = ['all', '--json', '-c', '-n', String(max || defaultMax)]
-        return runCli('rdt', args)
+        const args = ['all', '--json', '-n', String(max || defaultMax)]
+        return compactRedditForModel(await runCli('rdt', args))
       }
     },
 
-    rdt_saved: {
+    reddit_saved: {
       description: 'Browse your saved Reddit posts (requires login).',
       parameters: z.object({ max: z.number().optional() }),
       execute: async ({ max }) => {
         await ensureRdtAuth()
-        const args = ['saved', '--json', '-c', '-n', String(max || defaultMax)]
-        return runCli('rdt', args)
+        const args = ['saved', '--json', '-n', String(max || defaultMax)]
+        return compactRedditForModel(await runCli('rdt', args))
       }
     },
 
-    rdt_upvoted: {
+    reddit_upvoted: {
       description: 'Browse posts you have upvoted (requires login).',
       parameters: z.object({ max: z.number().optional() }),
       execute: async ({ max }) => {
         await ensureRdtAuth()
-        const args = ['upvoted', '--json', '-c', '-n', String(max || defaultMax)]
-        return runCli('rdt', args)
+        const args = ['upvoted', '--json', '-n', String(max || defaultMax)]
+        return compactRedditForModel(await runCli('rdt', args))
       }
     },
 
-    rdt_user: {
+    reddit_user: {
       description: 'View a Reddit user profile overview — karma, account age, trophy case.',
       parameters: z.object({
         username: z.string()

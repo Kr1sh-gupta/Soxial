@@ -15,9 +15,12 @@ interface Window {
     onOnboardingToolCall: (cb: (data: { name: string, args: any }) => void) => void
     onOnboardingToolResult: (cb: (data: { name: string, result: any }) => void) => void
     onOnboardingReasoning: (cb: (text: string) => void) => void
+    onOnboardingTransientRetry: (cb: (info: { attempt: number; maxAttempts: number; backoffMs: number; model: string }) => void) => void
     onOnboardingQuestion: (cb: (payload: { batchId: string; questions: { id: string; text: string; type: 'single' | 'multi' | 'text'; options?: string[] }[] }) => void) => void
     sendOnboardingAnswer: (id: string, answers: { id: string; answer: string | string[] }[]) => void
     saveOnboardingConversation: (messages: { role: string; content: string; steps?: any[] }[]) => Promise<number>
+    retryOnboardingAuth: (id: string, retry: boolean) => void
+    onOnboardingAuthRequired: (cb: (payload: { id: string; twitter: { needed: boolean; ok: boolean }; reddit: { needed: boolean; ok: boolean } }) => void) => void
     chatSend: (messages: any[], options?: { model?: string; effort?: string }, sessionId?: number) => Promise<any>
     chatInject: (content: string | { content: string; attachments?: { name: string; mimeType: string; data: string }[] }) => Promise<any>
     chatStop: () => Promise<any>
@@ -41,15 +44,16 @@ interface Window {
     onChatToolResult: (cb: (data: { name: string; result: any }) => void) => void
     onChatError: (cb: (error: string) => void) => void
     onChatReasoning: (cb: (text: string) => void) => void
+    onChatTransientRetry: (cb: (info: { attempt: number; maxAttempts: number; backoffMs: number; model: string }) => void) => void
     onChatInjected: (cb: (messages: { role: string; content: string | null; attachments?: { name: string; mimeType: string; data: string }[] }[]) => void) => void
     getTier: () => Promise<{ tier: string }>
     getAvailableModels: () => Promise<string[]>
     getDefaultModel: () => Promise<string>
     getApiKeys: () => Promise<Array<{ id: number; name: string; api_key: string; provider: string; tier: string; is_active: number; created_at: string; last_used_at: string | null }>>
-    addApiKey: (name: string, apiKey: string) => Promise<number>
+    addApiKey: (apiKey: string) => Promise<number>
     removeApiKey: (id: number) => Promise<void>
     getModelExhaustionStatus: (model: string) => Promise<{ exhausted: boolean; availableAt: string | null }>
-    detectApiTier: () => Promise<'free' | 'pro'>
+    detectApiTier: (force?: boolean) => Promise<'free' | 'pro'>
     removeAllListeners: (channel: string) => void
   }
 }

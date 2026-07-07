@@ -18,10 +18,15 @@ const api = {
   onOnboardingToolCall: (cb: (data: { name: string, args: any }) => void) => ipcRenderer.on('onboarding:toolCall', (_e, data) => cb(data)),
   onOnboardingToolResult: (cb: (data: { name: string, result: any }) => void) => ipcRenderer.on('onboarding:toolResult', (_e, data) => cb(data)),
   onOnboardingReasoning: (cb: (text: string) => void) => ipcRenderer.on('onboarding:reasoning', (_e, text) => cb(text)),
+  onOnboardingTransientRetry: (cb: (info: { attempt: number; maxAttempts: number; backoffMs: number; model: string }) => void) =>
+    ipcRenderer.on('onboarding:transientRetry', (_e, info) => cb(info)),
   onOnboardingQuestion: (cb: (payload: { batchId: string; questions: { id: string; text: string; type: 'single' | 'multi' | 'text'; options?: string[] }[] }) => void) =>
     ipcRenderer.on('onboarding:question', (_e, payload) => cb(payload)),
   sendOnboardingAnswer: (id: string, answers: { id: string; answer: string | string[] }[]) => ipcRenderer.send('onboarding:answer', { id, answers }),
   saveOnboardingConversation: (messages: { role: string; content: string; steps?: any[] }[]) => ipcRenderer.invoke('onboarding:saveConversation', messages),
+  retryOnboardingAuth: (id: string, retry: boolean) => ipcRenderer.send('onboarding:retryAuth', { id, retry }),
+  onOnboardingAuthRequired: (cb: (payload: { id: string; twitter: { needed: boolean; ok: boolean }; reddit: { needed: boolean; ok: boolean } }) => void) =>
+    ipcRenderer.on('onboarding:authRequired', (_e, payload) => cb(payload)),
 
   chatSend: (messages: any[], options?: { model?: string; effort?: string }, sessionId?: number) => ipcRenderer.invoke('chat:send', messages, options, sessionId),
   chatInject: (content: string) => ipcRenderer.invoke('chat:inject', content),
@@ -47,16 +52,18 @@ const api = {
   onChatToolResult: (cb: (data: { name: string, result: any }) => void) => ipcRenderer.on('chat:toolResult', (_e, data) => cb(data)),
   onChatError: (cb: (error: string) => void) => ipcRenderer.on('chat:error', (_e, error) => cb(error)),
   onChatReasoning: (cb: (text: string) => void) => ipcRenderer.on('chat:reasoning', (_e, text) => cb(text)),
+  onChatTransientRetry: (cb: (info: { attempt: number; maxAttempts: number; backoffMs: number; model: string }) => void) =>
+    ipcRenderer.on('chat:transientRetry', (_e, info) => cb(info)),
   onChatInjected: (cb: (messages: { role: string; content: string | null; attachments?: { name: string; mimeType: string; data: string }[] }[]) => void) => ipcRenderer.on('chat:injected', (_e, messages) => cb(messages)),
 
   getTier: () => ipcRenderer.invoke('api:getTier'),
   getAvailableModels: () => ipcRenderer.invoke('api:getAvailableModels'),
   getDefaultModel: () => ipcRenderer.invoke('api:getDefaultModel'),
   getApiKeys: () => ipcRenderer.invoke('api:getApiKeys'),
-  addApiKey: (name: string, apiKey: string) => ipcRenderer.invoke('api:addApiKey', name, apiKey),
+  addApiKey: (apiKey: string) => ipcRenderer.invoke('api:addApiKey', apiKey),
   removeApiKey: (id: number) => ipcRenderer.invoke('api:removeApiKey', id),
   getModelExhaustionStatus: (model: string) => ipcRenderer.invoke('api:getModelExhaustionStatus', model),
-  detectApiTier: () => ipcRenderer.invoke('api:detectTier'),
+  detectApiTier: (force?: boolean) => ipcRenderer.invoke('api:detectTier', force),
 
   removeAllListeners: (channel: string) => ipcRenderer.removeAllListeners(channel),
 }

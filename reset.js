@@ -4,7 +4,7 @@ const { unlinkSync, existsSync } = require('fs')
 const { homedir } = require('os')
 const { join, dirname } = require('path')
 
-const APP_NAME = 'soxial'
+const APP_NAME = 'Soxial'
 
 const DB_FILENAME = 'soxial.db'
 
@@ -33,28 +33,42 @@ console.log(`\nResetting ${APP_NAME} ...\n`)
 
 step('Killing running app', () => {
   try {
-    execSync('pkill -9 -f "electron .*soxial"', { stdio: 'pipe' })
+    execSync("pkill -9 -f 'electron .'", { stdio: 'pipe' })
   } catch {}
 })
 
 const db = dbPath()
+const dbDir = dirname(db)
 
 // Clean up old db filename if it still exists
-const oldDb = join(dirname(db), 'social-agent.db')
+const oldDb = join(dbDir, 'social-agent.db')
 if (existsSync(oldDb)) unlinkSync(oldDb)
 
-step(`Deleting database (${db})`, () => {
-  if (existsSync(db)) {
-    unlinkSync(db)
+step(`Deleting database (${dbDir})`, () => {
+  // Delete the main DB plus its WAL/SHM sidecars so SQLite can't recover old data.
+  for (const f of ['soxial.db', 'soxial.db-wal', 'soxial.db-shm']) {
+    const p = join(dbDir, f)
+    if (existsSync(p)) unlinkSync(p)
   }
 })
 
 step('Removing twitter-cli', () => {
-  execSync('uv tool uninstall twitter-cli', { stdio: 'pipe' })
+  try {
+    execSync('uv tool uninstall twitter-cli', { stdio: 'pipe' })
+  } catch (e) {
+    // Already uninstalled is the desired state — not a failure.
+    const msg = (e.stderr?.toString() || e.message || '')
+    if (!/is not installed/i.test(msg)) throw e
+  }
 })
 
 step('Removing rdt-cli', () => {
-  execSync('uv tool uninstall rdt-cli', { stdio: 'pipe' })
+  try {
+    execSync('uv tool uninstall rdt-cli', { stdio: 'pipe' })
+  } catch (e) {
+    const msg = (e.stderr?.toString() || e.message || '')
+    if (!/is not installed/i.test(msg)) throw e
+  }
 })
 
 console.log('\n Done. Run `npm run dev` to start fresh. Onboarding will reinstall the CLIs.\n')

@@ -8,6 +8,13 @@ const SPRING =
 const SMOOTH =
   "max-width 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275), height 0.15s ease-out";
 
+const MODEL_DISPLAY: Record<string, string> = {
+  "gemini-3.5-flash": "Gemini 3.5 Flash",
+  "gemini-3.1-pro": "Gemini 3.1 Pro",
+  "gemini-3.1-flash-lite": "Gemini 3.1 Flash Lite",
+};
+const modelLabel = (id: string) => MODEL_DISPLAY[id] || id;
+
 interface Attachment {
   id: string;
   file: File;
@@ -156,6 +163,8 @@ export interface PromptInputProps {
   };
   onAnswer?: (answer: string | string[]) => void;
   modelExhaustionStatus?: Record<string, { exhausted: boolean; availableAt: string | null }>;
+  onModelChange?: (model: string) => void;
+  onEffortChange?: (effort: string) => void;
 }
 
 export const PromptInput = React.forwardRef<HTMLDivElement, PromptInputProps>(
@@ -174,11 +183,22 @@ export const PromptInput = React.forwardRef<HTMLDivElement, PromptInputProps>(
     question,
     onAnswer,
     modelExhaustionStatus,
+    onModelChange,
+    onEffortChange,
   }) => {
     const [expanded, setExpanded] = useState(false);
     const [isSmooth, setIsSmooth] = useState(false);
     const [value, setValue] = useState("");
     const [selectedModel, setSelectedModel] = useState(models[0]);
+
+    // Keep selectedModel in sync when the `models` prop list changes (e.g. after
+    // availableModels loads async). Preserve the user's choice if it's still valid.
+    useEffect(() => {
+      if (models.length > 0 && !models.includes(selectedModel)) {
+        setSelectedModel(models[0]);
+        onModelChange?.(models[0]);
+      }
+    }, [models]);
     const [effortIndex, setEffortIndex] = useState(1);
     const [modelOpen, setModelOpen] = useState(false);
     const [attachments, setAttachments] = useState<Attachment[]>([]);
@@ -204,15 +224,6 @@ export const PromptInput = React.forwardRef<HTMLDivElement, PromptInputProps>(
 
     const showEffort = modelSupportsEffort(selectedModel);
     const hasValue = value.trim() !== "" || attachments.length > 0;
-
-    // Check if current model is exhausted
-    const isExhausted = modelExhaustionStatus?.[selectedModel]?.exhausted;
-
-    // Find the first non-exhausted model
-    const availableModel = models.find(m => {
-      const exhausted = modelExhaustionStatus?.[m]?.exhausted;
-      return !exhausted;
-    }) || models[0];
 
     const updateFades = () => {
       const el = textareaRef.current;
@@ -349,15 +360,6 @@ export const PromptInput = React.forwardRef<HTMLDivElement, PromptInputProps>(
 
     const handleSubmit = () => {
       if (value.trim() === "" && attachments.length === 0) return;
-      if (isExhausted && availableModel !== selectedModel) {
-        // Auto-switch to a non-exhausted model
-        setSelectedModel(availableModel);
-        return;
-      }
-      if (isExhausted) {
-        // All models are exhausted
-        return;
-      }
       setIsSmooth(false);
       onSubmit?.(value, {
         model: selectedModel,
@@ -375,7 +377,11 @@ export const PromptInput = React.forwardRef<HTMLDivElement, PromptInputProps>(
 
     const cycleEffort = (e: React.MouseEvent) => {
       e.stopPropagation();
-      setEffortIndex((p) => (p + 1) % efforts.length);
+      setEffortIndex((p) => {
+        const next = (p + 1) % efforts.length;
+        onEffortChange?.(efforts[next]);
+        return next;
+      });
     };
 
     const handleFiles = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -830,7 +836,7 @@ export const PromptInput = React.forwardRef<HTMLDivElement, PromptInputProps>(
               >
                 <GlmIcon className="size-3.5 opacity-70 group-hover:opacity-100" />
                 <span className="text-xs font-semibold">
-                  <MorphingText text={selectedModel} />
+                  <MorphingText text={modelLabel(selectedModel)} />
                 </span>
               </button>
               <div
@@ -866,8 +872,12 @@ export const PromptInput = React.forwardRef<HTMLDivElement, PromptInputProps>(
                         e.stopPropagation();
                         if (isModelExhausted) return;
                         setSelectedModel(model);
+                        onModelChange?.(model);
                         setModelOpen(false);
-                        if (!modelSupportsEffort(model)) setEffortIndex(0);
+                        if (!modelSupportsEffort(model)) {
+                          setEffortIndex(0);
+                          onEffortChange?.(efforts[0]);
+                        }
                       }}
                       className={cn(
                         "group relative flex h-8 w-full items-center rounded-xl px-2.5 text-left text-xs font-medium text-foreground/80 hover:text-foreground",
@@ -878,7 +888,7 @@ export const PromptInput = React.forwardRef<HTMLDivElement, PromptInputProps>(
                     >
                       <span className="flex items-center gap-2">
                         <GlmIcon className="size-3.5 opacity-85 group-hover:opacity-100" />
-                        {model}
+                        {modelLabel(model)}
                       </span>
                       {isModelExhausted && hoursRemaining != null && hoursRemaining > 0 && (
                         <span className="ml-auto text-[10px] text-muted-foreground/60">

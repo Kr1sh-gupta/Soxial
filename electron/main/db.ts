@@ -282,6 +282,29 @@ function initSchema(db: Database.Database) {
     db.exec('ALTER TABLE api_keys ADD COLUMN tier TEXT DEFAULT \'unknown\'')
   }
 
+  // Migration: normalize legacy custom-named additional keys to the "Key N" scheme.
+  // The new UI no longer collects names; old keys ("Personal", "Work", …) get renamed
+  // so the DB stays uniform. Idempotent: a no-op once every name matches Key % or is 'Primary'.
+  const legacyKeyRows = db.prepare(
+    "SELECT id FROM api_keys WHERE is_active = 1 AND name != 'Primary' AND name NOT LIKE 'Key %' ORDER BY id ASC"
+  ).all() as { id: number }[]
+  if (legacyKeyRows.length > 0) {
+    let maxKeyNum = 0
+    for (const r of db.prepare("SELECT name FROM api_keys WHERE name LIKE 'Key %'").all() as { name: string }[]) {
+      const m = /^Key (\d+)$/.exec(r.name || '')
+      if (m) maxKeyNum = Math.max(maxKeyNum, parseInt(m[1], 10))
+    }
+    const renameStmt = db.prepare('UPDATE api_keys SET name = ? WHERE id = ?')
+    const tx = db.transaction((rows: { id: number }[]) => {
+      for (const row of rows) {
+        maxKeyNum++
+        renameStmt.run(`Key ${maxKeyNum}`, row.id)
+      }
+    })
+    tx(legacyKeyRows)
+    logger.info('db', `normalized ${legacyKeyRows.length} legacy API key name(s) to Key N`)
+  }
+
   // Migration: persist authoritative Interactions API steps per session.
   // Stores verbatim server steps (thought signatures + function_call ids +
   // function_result payloads) so multi-turn history round-trips correctly.
@@ -614,10 +637,22 @@ export function getApiKeys(provider: string = 'google'): Array<{ id: number; nam
   return db.prepare('SELECT * FROM api_keys WHERE provider = ? AND is_active = 1 ORDER BY created_at ASC').all(provider) as any[]
 }
 
-export function addApiKey(name: string, apiKey: string, provider: string = 'google'): number {
+export function addApiKey(apiKey: string, provider: string = 'google'): number {
   const db = getDb()
+  const name = nextKeyName(db)
   const result = db.prepare('INSERT INTO api_keys (name, api_key, provider) VALUES (?, ?, ?)').run(name, apiKey, provider)
   return result.lastInsertRowid as number
+}
+
+// Auto-name nameless keys as "Key N" (N = max existing numeric suffix + 1).
+function nextKeyName(db: Database.Database): string {
+  const rows = db.prepare("SELECT name FROM api_keys WHERE name LIKE 'Key %'").all() as { name: string }[]
+  let max = 0
+  for (const r of rows) {
+    const m = /^Key (\d+)$/.exec(r.name || '')
+    if (m) max = Math.max(max, parseInt(m[1], 10))
+  }
+  return `Key ${max + 1}`
 }
 
 export function removeApiKey(id: number): void {
@@ -640,50 +675,51 @@ export function getApiKeysByTier(tier: 'free' | 'pro', provider: string = 'googl
   return db.prepare('SELECT * FROM api_keys WHERE provider = ? AND tier = ? AND is_active = 1 ORDER BY created_at ASC').all(provider, tier) as any[]
 }
 
-export function getAvailableApiKeyForModel(model: string, requiredTier?: 'free' | 'pro', excludeApiKeyId?: number): { id: number; api_key: string } | null {
+export function getAvailableApiKeyForModel(model: string, requiredTier?: 'free' | 'pro', excludeApiKeyIds?: number[]): { id: number; api_key: string } | null {
   const db = getDb()
   const now = new Date().toISOString()
-  
+
   // Determine required tier based on model
   let tierFilter: string | null | undefined = requiredTier
   if (!tierFilter) {
     // gemini-3.1-pro requires pro tier, others work with free tier
     tierFilter = model === 'gemini-3.1-pro' ? 'pro' : null
   }
-  
+
   // Build query with optional tier filter
   let query = `
-    SELECT id, api_key 
-    FROM api_keys 
-    WHERE is_active = 1 
+    SELECT id, api_key
+    FROM api_keys
+    WHERE is_active = 1
     AND provider = 'google'
     AND id NOT IN (
-      SELECT api_key_id 
-      FROM model_exhaustion 
-      WHERE model = ? 
+      SELECT api_key_id
+      FROM model_exhaustion
+      WHERE model = ?
       AND available_at > ?
       AND api_key_id IS NOT NULL
     )
   `
   const params: any[] = [model, now]
-  
+
   if (tierFilter) {
     query += ' AND tier = ?'
     params.push(tierFilter)
   }
-  
-  // Exclude a specific API key ID if provided (for rotation)
-  if (excludeApiKeyId) {
-    query += ' AND id != ?'
-    params.push(excludeApiKeyId)
+
+  // Exclude already-tried keys (for rotation across keys on the same model).
+  const triedIds = (excludeApiKeyIds || []).filter(id => id != null)
+  if (triedIds.length > 0) {
+    query += ` AND id NOT IN (${triedIds.map(() => '?').join(',')})`
+    params.push(...triedIds)
   }
-  
+
   query += ' ORDER BY last_used_at ASC NULLS LAST'
-  
+
   const availableKeys = db.prepare(query).all(...params) as any[]
-  
-  logger.info('db', `getAvailableApiKeyForModel for ${model}: found ${availableKeys.length} keys (exclude: ${excludeApiKeyId}, tier: ${tierFilter})`)
-  
+
+  logger.info('db', `getAvailableApiKeyForModel for ${model}: found ${availableKeys.length} keys (exclude: ${JSON.stringify(triedIds)}, tier: ${tierFilter})`)
+
   if (availableKeys.length === 0) {
     return null
   }
@@ -732,20 +768,20 @@ export function isModelExhaustedForAllKeys(model: string, requiredTier?: 'free' 
     return exhaustedTierKeys.count >= tierKeys.count
   }
   
-  // Fallback to original logic for non-tier-specific checks
-  const profile = getProfile()
-  const hasPrimaryKey = !!(profile?.gemini_api_key || process.env.GEMINI_API_KEY)
-  const additionalKeys = db.prepare('SELECT COUNT(*) as count FROM api_keys WHERE is_active = 1 AND provider = \'google\'').get() as any
-  const totalKeys = additionalKeys.count + (hasPrimaryKey ? 1 : 0)
+  // Non-tier path: the primary key is synced into api_keys (see syncPrimaryKeyToApiKeys
+  // + the startup migration), so activeKeysCount already includes it — don't add it again.
+  const activeKeysCount = db.prepare('SELECT COUNT(*) as count FROM api_keys WHERE is_active = 1 AND provider = \'google\'').get() as any
+  const totalKeys = activeKeysCount.count
   if (totalKeys === 0) return false
-  
+
   const exhaustedKeys = db.prepare(`
-    SELECT COUNT(DISTINCT COALESCE(api_key_id, -1)) as count 
-    FROM model_exhaustion 
-    WHERE model = ? 
+    SELECT COUNT(DISTINCT api_key_id) as count
+    FROM model_exhaustion
+    WHERE model = ?
     AND available_at > ?
+    AND api_key_id IS NOT NULL
   `).get(model, now) as any
-  
+
   return exhaustedKeys.count >= totalKeys
 }
 

@@ -14,10 +14,10 @@ export const SOCIAL_FETCH_TOOLS = new Set([
   'twitter_following',
   'twitter_likes',
   'twitter_bookmarks',
-  'rdt_user_posts',
-  'rdt_user_comments',
-  'rdt_whoami',
-  'rdt_feed',
+  'reddit_user_posts',
+  'reddit_user_comments',
+  'reddit_whoami',
+  'reddit_feed',
 ])
 
 export function getSinceDate(): string {
@@ -41,6 +41,85 @@ function extractDataArray(result: CliResult): any[] {
     return d.data.children.map((c: any) => c.data ?? c)
   }
   return []
+}
+
+/** Compact a full X item for the model: KEEP media (type+url), drop noise. */
+export function compactTwitterItem(t: any): any {
+  if (!t) return null
+  const a = t.author
+  const author = typeof a === 'string' ? a : a?.screenName ? `@${a.screenName}` : null
+  const m = t.metrics || {}
+  const media = Array.isArray(t.media)
+    ? t.media
+        .map((x: any) => (x?.type && x?.url ? { type: x.type, url: x.url } : null))
+        .filter(Boolean)
+    : []
+  return {
+    id: t.id,
+    author,
+    text: t.text || t.full_text || '',
+    likes: m.likes ?? t.likes ?? 0,
+    retweets: m.retweets ?? t.rts ?? t.retweets ?? 0,
+    replies: m.replies ?? t.replies ?? 0,
+    quotes: m.quotes ?? t.quotes ?? 0,
+    views: m.views ?? t.views ?? 0,
+    bookmarks: m.bookmarks ?? t.bookmarks ?? 0,
+    time: t.createdAtLocal || t.createdAt || t.time,
+    media,
+    urls: Array.isArray(t.urls) ? t.urls.slice(0, 4) : [],
+    isRetweet: !!t.isRetweet,
+  }
+}
+
+/** Best-effort direct media URL for a reddit post (image/gif/video). */
+function redditMediaUrl(it: any): string | undefined {
+  if (!it) return undefined
+  const vid = it.media?.reddit_video?.fallback_url || it.secure_media?.reddit_video?.fallback_url
+  if (it.is_video) return vid
+  const hint = it.post_hint
+  if (hint === 'image' || hint === 'gallery') {
+    return it.url && !it.is_self ? it.url : it.preview?.images?.[0]?.source?.url || undefined
+  }
+  if (hint === 'hosted:video' || hint === 'rich:video') return vid
+  return undefined
+}
+
+/** Compact a full reddit post/comment item for the model, preserving media signals. */
+export function compactRedditItem(it: any): any {
+  if (!it) return null
+  return {
+    id: it.id || it.name,
+    name: it.name,
+    title: it.title || null,
+    subreddit: it.subreddit,
+    author: it.author,
+    score: it.score,
+    num_comments: it.num_comments,
+    created_utc: it.created_utc,
+    permalink: it.permalink,
+    is_self: !!it.is_self,
+    is_video: !!it.is_video,
+    post_hint: it.post_hint || null,
+    media_url: redditMediaUrl(it) || null,
+    url: it.url,
+    text: ((it.selftext || it.body || '') as string).slice(0, 500),
+  }
+}
+
+/** Compact a non-compact X listing result for the model (media preserved). */
+export function compactTwitterForModel(result: CliResult): CliResult {
+  if (!result?.ok) return result
+  const items = extractDataArray(result)
+  if (items.length === 0) return { ok: true, data: [], error: undefined }
+  return { ok: true, data: items.map(compactTwitterItem).filter(Boolean), error: undefined }
+}
+
+/** Compact a non-compact rdt listing result for the model (media preserved). */
+export function compactRedditForModel(result: CliResult): CliResult {
+  if (!result?.ok) return result
+  const items = extractDataArray(result)
+  if (items.length === 0) return { ok: true, data: [], error: undefined }
+  return { ok: true, data: items.map(compactRedditItem).filter(Boolean), error: undefined }
 }
 
 function twitterItemTimestamp(item: any): number {
@@ -147,8 +226,8 @@ function toRedditCommentRows(items: any[], username?: string): SocialContentRow[
 export const SOCIAL_PERSIST_TOOLS = new Set([
   'twitter_user_posts',
   'twitter_replies',
-  'rdt_user_posts',
-  'rdt_user_comments',
+  'reddit_user_posts',
+  'reddit_user_comments',
 ])
 
 export function persistSocialToolResult(
@@ -174,10 +253,10 @@ export function persistSocialToolResult(
       case 'twitter_replies':
         rows = toTwitterRows(items, 'reply', args.handle)
         break
-      case 'rdt_user_posts':
+      case 'reddit_user_posts':
         rows = toRedditPostRows(items, args.username)
         break
-      case 'rdt_user_comments':
+      case 'reddit_user_comments':
         rows = toRedditCommentRows(items, args.username)
         break
       default:
@@ -203,11 +282,11 @@ export async function fetchTwitterUserPosts(handle: string): Promise<CliResult> 
   const searchResult = await runTwitterCli([
     'search', '--from', handle, '--exclude', 'replies', '--since', since,
     '-n', String(MAX_SOCIAL_ITEMS), '--json',
-  ])
+  ], { compact: false })
 
   let items = extractDataArray(searchResult)
   if (!searchResult.ok || items.length === 0) {
-    const fallback = await runTwitterCli(['user-posts', handle, '--max', String(MAX_SOCIAL_ITEMS), '--json'])
+    const fallback = await runTwitterCli(['user-posts', handle, '--max', String(MAX_SOCIAL_ITEMS), '--json'], { compact: false })
     if (!fallback.ok) return fallback
     items = extractDataArray(fallback)
     return { ok: true, data: trimToLookback(items, twitterItemTimestamp) }
@@ -221,7 +300,7 @@ export async function fetchTwitterReplies(handle: string): Promise<CliResult> {
   const result = await runTwitterCli([
     'search', `from:${handle} filter:replies`, '--since', since,
     '-n', String(MAX_SOCIAL_ITEMS), '--json',
-  ])
+  ], { compact: false })
   if (!result.ok) return result
   const items = trimToLookback(extractDataArray(result), twitterItemTimestamp)
   return { ok: true, data: items }
@@ -237,9 +316,9 @@ async function fetchRedditPaginated(
   let after: string | undefined
 
   while (allItems.length < MAX_SOCIAL_ITEMS) {
-    const batchSize = Math.min(100, MAX_SOCIAL_ITEMS - allItems.length)
-    const args = [command, username, '--json', '-c', '-n', String(batchSize)]
-    if (after) args.push('--after', after)
+      const batchSize = Math.min(100, MAX_SOCIAL_ITEMS - allItems.length)
+      const args = [command, username, '--json', '-n', String(batchSize)]
+      if (after) args.push('--after', after)
 
     const result = await runCli('rdt', args)
     if (!result.ok) {
@@ -385,13 +464,13 @@ export async function gatherOnboardingSocialData(
     // Likes — content taste and preferences (authenticated user only)
     const screenName = whoamiResult.data?.user?.screenName || whoamiResult.data?.user?.username || handle
     callbacks.onToolCall('twitter_likes', { handle: screenName, max: 30 })
-    const likesResult = await runTwitterCli(['likes', screenName, '--json', '-n', '30'])
+    const likesResult = await runTwitterCli(['likes', screenName, '--json', '-n', '30'], { compact: false })
     callbacks.onToolResult('twitter_likes', likesResult)
     gathered.twitter_likes = likesResult
 
     // Bookmarks — reference-worthy content the user saved
     callbacks.onToolCall('twitter_bookmarks', { max: 20 })
-    const bookmarksResult = await runTwitterCli(['bookmarks', '--json', '-n', '20'])
+    const bookmarksResult = await runTwitterCli(['bookmarks', '--json', '-n', '20'], { compact: false })
     callbacks.onToolResult('twitter_bookmarks', bookmarksResult)
     gathered.twitter_bookmarks = bookmarksResult
   }
@@ -399,30 +478,30 @@ export async function gatherOnboardingSocialData(
   if (profile.reddit_username) {
     const username = profile.reddit_username
 
-    callbacks.onToolCall('rdt_user_posts', { username, max: MAX_SOCIAL_ITEMS, since: getSinceDate() })
+    callbacks.onToolCall('reddit_user_posts', { username, max: MAX_SOCIAL_ITEMS, since: getSinceDate() })
     const postsResult = await fetchRedditUserPosts(username)
-    const postsPersist = persistSocialToolResult('rdt_user_posts', { username }, postsResult)
-    callbacks.onToolResult('rdt_user_posts', { ...postsResult, _persist: postsPersist })
-    gathered.rdt_user_posts = postsResult
-    gathered._social_persist = { ...(gathered._social_persist || {}), rdt_user_posts: postsPersist }
+    const postsPersist = persistSocialToolResult('reddit_user_posts', { username }, postsResult)
+    callbacks.onToolResult('reddit_user_posts', { ...postsResult, _persist: postsPersist })
+    gathered.reddit_user_posts = postsResult
+    gathered._social_persist = { ...(gathered._social_persist || {}), reddit_user_posts: postsPersist }
 
-    callbacks.onToolCall('rdt_user_comments', { username, max: MAX_SOCIAL_ITEMS, since: getSinceDate() })
+    callbacks.onToolCall('reddit_user_comments', { username, max: MAX_SOCIAL_ITEMS, since: getSinceDate() })
     const commentsResult = await fetchRedditUserComments(username)
-    const commentsPersist = persistSocialToolResult('rdt_user_comments', { username }, commentsResult)
-    callbacks.onToolResult('rdt_user_comments', { ...commentsResult, _persist: commentsPersist })
-    gathered.rdt_user_comments = commentsResult
-    gathered._social_persist = { ...(gathered._social_persist || {}), rdt_user_comments: commentsPersist }
+    const commentsPersist = persistSocialToolResult('reddit_user_comments', { username }, commentsResult)
+    callbacks.onToolResult('reddit_user_comments', { ...commentsResult, _persist: commentsPersist })
+    gathered.reddit_user_comments = commentsResult
+    gathered._social_persist = { ...(gathered._social_persist || {}), reddit_user_comments: commentsPersist }
 
-    callbacks.onToolCall('rdt_whoami', {})
+    callbacks.onToolCall('reddit_whoami', {})
     const whoamiResult = await fetchRedditWhoami(profile.reddit_username)
-    callbacks.onToolResult('rdt_whoami', whoamiResult)
-    gathered.rdt_whoami = whoamiResult
+    callbacks.onToolResult('reddit_whoami', whoamiResult)
+    gathered.reddit_whoami = whoamiResult
 
     // Subscribed subreddits — communities the user already participates in
-    callbacks.onToolCall('rdt_feed', { subs_only: true, max: 25 })
-    const feedResult = await runCli('rdt', ['feed', '--json', '-c', '--subs-only', '-n', '25'])
-    callbacks.onToolResult('rdt_feed', feedResult)
-    gathered.rdt_feed = feedResult
+    callbacks.onToolCall('reddit_feed', { subs_only: true, max: 25 })
+    const feedResult = await runCli('rdt', ['feed', '--json', '--subs-only', '-n', '25'])
+    callbacks.onToolResult('reddit_feed', feedResult)
+    gathered.reddit_feed = feedResult
   }
 
   return gathered

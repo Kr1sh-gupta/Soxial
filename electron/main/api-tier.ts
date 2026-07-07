@@ -36,10 +36,10 @@ async function testApiKeyTier(apiKey: string): Promise<'free' | 'pro'> {
   }
 }
 
-export async function detectApiTier(): Promise<'free' | 'pro'> {
+export async function detectApiTier(force: boolean = false): Promise<'free' | 'pro'> {
   const currentTier = getApiTier()
 
-  if (currentTier.last_verified_at) {
+  if (!force && currentTier.last_verified_at) {
     const lastVerified = new Date(currentTier.last_verified_at)
     const hoursSince = (Date.now() - lastVerified.getTime()) / (1000 * 60 * 60)
     if (hoursSince < 24) {

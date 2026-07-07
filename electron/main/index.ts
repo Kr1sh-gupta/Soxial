@@ -176,8 +176,24 @@ app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()
 })
 
+// Onboarding auth gate: blocks gather until X/Reddit cookies are present.
+const pendingAuthRetries = new Map<string, (retry: boolean) => void>()
+let authRetryListenerInstalled = false
+function installAuthRetryListener() {
+  if (authRetryListenerInstalled) return
+  authRetryListenerInstalled = true
+  ipcMain.on('onboarding:retryAuth', (_e, { id, retry }: { id: string; retry: boolean }) => {
+    const resolve = pendingAuthRetries.get(id)
+    if (resolve) {
+      pendingAuthRetries.delete(id)
+      resolve(retry)
+    }
+  })
+}
+
 function setupIpc() {
   logger.info('main', 'registering IPC handlers')
+  installAuthRetryListener()
 
   ipcMain.handle('db:getProfile', () => {
     const p = getProfile()
@@ -251,41 +267,76 @@ function setupIpc() {
       // Allow UI to render before starting heavy work
       await new Promise(resolve => setTimeout(resolve, 10))
       sendChunk('PHASE:gather')
-      
-      // Install CLIs and send tool calls immediately
-      sendToolCall('install_twitter_cli', {})
-      sendToolCall('install_rdt_cli', {})
-      
-      // Install CLIs and wait for completion
-      let rdtAuthResult: Awaited<ReturnType<typeof ensureRdtAuth>> | undefined
-      let twitterAuthResult: Awaited<ReturnType<typeof ensureTwitterAuth>> | undefined
+
+      // Auth gate helper: block until each platform the user entered is authenticated.
+      const wantTwitter = !!profile?.twitter_handle
+      const wantReddit = !!profile?.reddit_username
+      const waitForPlatformAuth = async (): Promise<{ aborted: boolean; twitter?: any; reddit?: any }> => {
+        while (true) {
+          let twitterRes: any
+          let redditRes: any
+          if (wantTwitter) {
+            sendToolCall('twitter_status', {})
+            try {
+              twitterRes = await ensureTwitterAuth()
+            } catch (e: any) {
+              twitterRes = { ok: false, error: 'X connection check failed' }
+              logger.error('main', 'ensureTwitterAuth threw', e)
+            }
+            sendToolResult('twitter_status', twitterRes)
+          }
+          if (wantReddit) {
+            sendToolCall('reddit_login', {})
+            try {
+              redditRes = await ensureRdtAuth()
+            } catch (e: any) {
+              redditRes = { ok: false, error: 'Reddit connection check failed' }
+              logger.error('main', 'ensureRdtAuth threw', e)
+            }
+            sendToolResult('reddit_login', redditRes)
+          }
+          const twitterOk = !wantTwitter || twitterRes?.ok
+          const redditOk = !wantReddit || redditRes?.ok
+          if (twitterOk && redditOk) {
+            return { aborted: false, twitter: twitterRes, reddit: redditRes }
+          }
+          // Block: ask the user to log in, wait for their "Logged in" / "Back" signal.
+          const id = `auth_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
+          mainWindow?.webContents.send('onboarding:authRequired', {
+            id,
+            twitter: { needed: wantTwitter, ok: twitterOk },
+            reddit: { needed: wantReddit, ok: redditOk },
+          })
+          const retry = await new Promise<boolean>((resolve) => pendingAuthRetries.set(id, resolve))
+          if (!retry) return { aborted: true }
+        }
+      }
+
+      // Install platform connectors
+      sendToolCall('connect_twitter', {})
+      sendToolCall('connect_reddit', {})
       try {
         await Promise.all([ensureCliInstalled('twitter'), ensureCliInstalled('rdt')])
-        sendToolResult('install_twitter_cli', { ok: true })
-        sendToolResult('install_rdt_cli', { ok: true })
-
-        if (profile?.twitter_handle) {
-          sendToolCall('twitter_status', {})
-          twitterAuthResult = await ensureTwitterAuth()
-          sendToolResult('twitter_status', twitterAuthResult)
-        }
-
-        if (profile?.reddit_username) {
-          sendToolCall('rdt_login', {})
-          rdtAuthResult = await ensureRdtAuth()
-          sendToolResult('rdt_login', rdtAuthResult)
-        }
+        sendToolResult('connect_twitter', { ok: true })
+        sendToolResult('connect_reddit', { ok: true })
       } catch (err) {
-        logger.error('main', 'CLI installation failed', err)
-        sendToolResult('install_twitter_cli', { ok: false, error: (err as Error).message })
-        sendToolResult('install_rdt_cli', { ok: false, error: (err as Error).message })
+        logger.error('main', 'platform connector setup failed', err)
+        sendToolResult('connect_twitter', { ok: false, error: 'X connector setup failed' })
+        sendToolResult('connect_reddit', { ok: false, error: 'Reddit connector setup failed' })
+      }
+
+      // Auth gate — per-platform: only require the platforms the user entered.
+      const auth = await waitForPlatformAuth()
+      if (auth.aborted) {
+        logger.info('main', 'onboarding auth gate aborted by user')
+        return { success: false, aborted: true }
       }
 
       const profileSafe = (({ zai_api_key, gemini_api_key, openai_api_key, puter_token, ...rest }) => rest)(profile || {})
       const gathered: Record<string, any> = { profile: profileSafe }
 
-      if (rdtAuthResult) gathered.rdt_login = rdtAuthResult
-      if (twitterAuthResult) gathered.twitter_status = twitterAuthResult
+      if (auth.reddit) gathered.reddit_login = auth.reddit
+      if (auth.twitter) gathered.twitter_status = auth.twitter
 
       const socialData = await gatherOnboardingSocialData(profile || {}, {
         onToolCall: sendToolCall,
@@ -325,6 +376,7 @@ function setupIpc() {
           (text) => resolve({ text }),
           (error) => resolve({ text: '', error }),
           (text) => mainWindow?.webContents.send('onboarding:reasoning', text),
+          (info) => mainWindow?.webContents.send('onboarding:transientRetry', info),
           { maxSteps: 60, fallbackChain: ONBOARDING_MODEL_FALLBACK },
           onboardingTools,
           ONBOARDING_SYSTEM_PROMPT
@@ -337,6 +389,11 @@ function setupIpc() {
       }
 
       logger.info('main', `onboarding complete (${result.text.length} chars)`)
+      if (!result.text || result.text.trim().length === 0) {
+        // Agent ended without producing a strategy (e.g. stream aborted mid-tool). Surface as retryable.
+        logger.warn('main', 'onboarding produced empty output — returning retryable error')
+        return { success: false, error: 'Onboarding ended without producing a strategy. Please retry.' }
+      }
       updateProfile({ onboarding_complete: 1 })
       generateQuickActions().catch(() => {})
       return { success: true, summary: result.text }
@@ -356,6 +413,7 @@ function setupIpc() {
           (text) => resolve({ text }),
           (error) => resolve({ text: '', error }),
           (text) => mainWindow?.webContents.send('onboarding:reasoning', text),
+          (info) => mainWindow?.webContents.send('onboarding:transientRetry', info),
           { maxSteps: 60, fallbackChain: ONBOARDING_MODEL_FALLBACK },
           onboardingTools,
           ONBOARDING_SYSTEM_PROMPT
@@ -368,6 +426,10 @@ function setupIpc() {
       }
 
       logger.info('main', `onboarding continuation complete (${result.text.length} chars)`)
+      if (!result.text || result.text.trim().length === 0) {
+        logger.warn('main', 'onboarding continuation produced empty output — returning retryable error')
+        return { success: false, error: 'Onboarding ended without producing a strategy. Please retry.' }
+      }
       updateProfile({ onboarding_complete: 1 })
       generateQuickActions().catch(() => {})
       return { success: true, summary: result.text }
@@ -397,8 +459,8 @@ function setupIpc() {
     return getApiKeys()
   })
 
-  ipcMain.handle('api:addApiKey', (_e, name: string, apiKey: string) => {
-    return addApiKey(name, apiKey)
+  ipcMain.handle('api:addApiKey', (_e, apiKey: string) => {
+    return addApiKey(apiKey)
   })
 
   ipcMain.handle('api:removeApiKey', (_e, id: number) => {
@@ -409,8 +471,8 @@ function setupIpc() {
     return getModelExhaustionStatus(model)
   })
 
-  ipcMain.handle('api:detectTier', async () => {
-    return await detectApiTier()
+  ipcMain.handle('api:detectTier', async (_e, force?: boolean) => {
+    return await detectApiTier(force)
   })
 
   ipcMain.handle('onboarding:saveConversation', async (_e, messages: { role: string; content: string; steps?: any[] }[]) => {
@@ -457,6 +519,7 @@ function setupIpc() {
           resolve()
         },
         (text) => mainWindow?.webContents.send('chat:reasoning', text),
+        (info) => mainWindow?.webContents.send('chat:transientRetry', info),
         {
           ...options,
           fallbackChain,
@@ -724,6 +787,8 @@ function compactGatheredData(gathered: Record<string, any>): Record<string, any>
         replies: t.metrics?.replies ?? t.replies ?? 0,
         bookmarks: t.metrics?.bookmarks ?? t.bookmarks ?? 0,
         createdAt: t.createdAtISO || t.createdAt || t.time,
+        isRetweet: !!t.isRetweet,
+        media: Array.isArray(t.media) ? t.media.map((m: any) => ({ type: m.type, url: m.url })).filter(Boolean) : [],
       }))
       compacted[key] = { ok: val.ok ?? true, data: compact, totalCount: items.length }
     }
@@ -747,7 +812,7 @@ function compactGatheredData(gathered: Record<string, any>): Record<string, any>
       }))
       compacted[key] = { ok: val.ok ?? true, data: compact }
     }
-    else if (key === 'rdt_user_posts' || key === 'rdt_feed') {
+    else if (key === 'reddit_user_posts' || key === 'reddit_feed') {
       const items = extractItems(val)
       const compact = items.slice(0, 25).map((p: any) => ({
         title: p.title,
@@ -756,10 +821,14 @@ function compactGatheredData(gathered: Record<string, any>): Record<string, any>
         score: p.score,
         numComments: p.num_comments,
         selftext: (p.selftext || '').slice(0, 200),
+        is_self: !!p.is_self,
+        is_video: !!p.is_video,
+        post_hint: p.post_hint || null,
+        media_url: (!p.is_self && p.url && p.post_hint) ? p.url : (p.is_video ? (p.media?.reddit_video?.fallback_url || null) : null),
       }))
       compacted[key] = { ok: val.ok ?? true, data: compact, totalCount: items.length }
     }
-    else if (key === 'rdt_user_comments') {
+    else if (key === 'reddit_user_comments') {
       const items = extractItems(val)
       const compact = items.slice(0, 30).map((c: any) => ({
         body: (c.body || '').slice(0, 300),

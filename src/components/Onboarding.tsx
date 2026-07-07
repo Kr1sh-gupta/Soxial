@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
-import { Check, Sparkles, ArrowRight, RefreshCw, ShieldAlert, Search as SearchIcon, Globe as GlobeIcon, Image as ImageIcon, AtSign, List, Eye, Send, CornerUpLeft, Newspaper, Heart, Repeat2, Bookmark, UserPlus, Info, Layers, BookOpen, MessageCircle, BadgeCheck, Flame, ThumbsUp, Database, Lightbulb, ShieldCheck, Gauge, Crosshair, SquarePen, RotateCcw, CalendarClock, Save, Download, Briefcase, Users, Package, Target, FileText, Trash2, TrendingUp, MessageSquare, Plus, Clock } from 'lucide-react'
+import { Check, Sparkles, ArrowRight, RefreshCw, ShieldAlert, Search as SearchIcon, Globe as GlobeIcon, Image as ImageIcon, AtSign, List, Eye, Send, CornerUpLeft, Newspaper, Heart, Repeat2, Bookmark, UserPlus, Info, Layers, BookOpen, MessageCircle, BadgeCheck, Flame, ThumbsUp, Database, Lightbulb, ShieldCheck, Gauge, Crosshair, SquarePen, RotateCcw, CalendarClock, Save, Download, Briefcase, Users, Package, Target, FileText, Trash2, TrendingUp, MessageSquare, Plus } from 'lucide-react'
 import { Message, MessageContent } from 'src/components/ai-elements/message'
 import { ChainOfThoughtStep } from 'src/components/ai-elements/chain-of-thought'
 import {
@@ -9,6 +9,8 @@ import { RichContent } from 'src/components/rich-content'
 import { Reasoning, ReasoningTrigger, ReasoningContent } from 'src/components/ai-elements/reasoning'
 import { QuestionInput, QuestionData } from 'src/components/ui/question-input'
 import { AppLogo } from 'src/components/ui/app-logo'
+import { ErrorBoundary } from 'src/components/ui/error-boundary'
+import { TransientRetryStep } from 'src/components/ui/transient-retry-step'
 
 const EASE = 'cubic-bezier(0.32, 0.72, 0, 1)'
 
@@ -88,7 +90,11 @@ export default function Onboarding({ onComplete }: { onComplete: (sessionId?: nu
           {step === 1 && <StepIdentity formData={formData} update={update} onNext={() => setStep(2)} />}
           {step === 2 && <StepApiKey formData={formData} update={update} onBack={() => setStep(1)} onNext={() => setStep(3)} />}
           {step === 3 && <StepPlatforms formData={formData} update={update} onBack={() => setStep(2)} onNext={() => setStep(4)} />}
-          {step === 4 && <StepAiOnboarding formData={formData} onComplete={onComplete} />}
+          {step === 4 && (
+            <ErrorBoundary>
+              <StepAiOnboarding formData={formData} onComplete={onComplete} onBack={() => setStep(3)} />
+            </ErrorBoundary>
+          )}
         </div>
       </div>
     </div>
@@ -320,70 +326,47 @@ function StepPlatforms({ formData, update, onBack, onNext }: any) {
 }
 
 function StepApiKey({ formData, update, onBack, onNext }: any) {
-  const [showAddKeyForm, setShowAddKeyForm] = useState(false)
-  const [newKeyName, setNewKeyName] = useState('')
-  const [newKeyKey, setNewKeyKey] = useState('')
-  const [addingKey, setAddingKey] = useState(false)
-  const [apiKeys, setApiKeys] = useState<Array<{ id: number; name: string; api_key: string; tier: string; created_at: string; last_used_at: string | null }>>([])
   const [primaryApiKey, setPrimaryApiKey] = useState(formData.gemini_api_key || '')
-  const [detectingTier, setDetectingTier] = useState(false)
+  const [extras, setExtras] = useState<Array<{ id?: number; value: string }>>([])
+  const [saving, setSaving] = useState(false)
 
   useEffect(() => {
     window.api.getApiKeys().then((keys: any[]) => {
-      setApiKeys((keys || []).filter(k => k.name !== 'Primary'))
+      setExtras((keys || []).filter(k => k.name !== 'Primary').map(k => ({ id: k.id, value: k.api_key })))
     })
   }, [])
 
-  const handleAddApiKey = async () => {
-    if (!newKeyName.trim() || !newKeyKey.trim()) return
-    
-    setAddingKey(true)
+  const updateExtra = (i: number, value: string) =>
+    setExtras(prev => prev.map((k, idx) => idx === i ? { ...k, value } : k))
+  const addExtra = () => setExtras(prev => [...prev, { value: '' }])
+  const removeExtra = (i: number) => setExtras(prev => prev.filter((_, idx) => idx !== i))
+
+  const handleContinue = async () => {
+    setSaving(true)
     try {
-      await window.api.addApiKey(newKeyName.trim(), newKeyKey.trim())
-      const keys = await window.api.getApiKeys()
-      setApiKeys((keys || []).filter(k => k.name !== 'Primary'))
-      setNewKeyName('')
-      setNewKeyKey('')
-      setShowAddKeyForm(false)
+      if (primaryApiKey.trim()) {
+        await window.api.updateProfile({ gemini_api_key: primaryApiKey.trim() })
+      }
+      // diff-persist extras: remove dropped, add new
+      const existing = ((await window.api.getApiKeys()) as any[]).filter(k => k.name !== 'Primary')
+      const keptIds = new Set(extras.filter(e => e.id).map(e => e.id))
+      for (const k of existing) {
+        if (!keptIds.has(k.id)) await window.api.removeApiKey(k.id)
+      }
+      for (const e of extras) {
+        if (!e.id && e.value.trim()) await window.api.addApiKey(e.value.trim())
+      }
+      update('gemini_api_key', primaryApiKey.trim())
+      onNext()
     } catch (err) {
-      console.error('Failed to add API key:', err)
-      alert('Failed to add API key. Please try again.')
+      console.error('Failed to save API keys:', err)
+      alert('Failed to save API keys. Please try again.')
     } finally {
-      setAddingKey(false)
+      setSaving(false)
     }
   }
 
-  const handleRemoveApiKey = async (id: number) => {
-    try {
-      await window.api.removeApiKey(id)
-      const keys = await window.api.getApiKeys()
-      setApiKeys((keys || []).filter(k => k.name !== 'Primary'))
-    } catch (err) {
-      console.error('Failed to remove API key:', err)
-      alert('Failed to remove API key. Please try again.')
-    }
-  }
-
-  const handleDetectTier = async () => {
-    setDetectingTier(true)
-    try {
-      await window.api.detectApiTier()
-      const keys = await window.api.getApiKeys()
-      setApiKeys((keys || []).filter(k => k.name !== 'Primary'))
-    } catch (err) {
-      console.error('Failed to detect API tier:', err)
-      alert('Failed to detect API tier. Please try again.')
-    } finally {
-      setDetectingTier(false)
-    }
-  }
-
-  const handleContinue = () => {
-    update('gemini_api_key', primaryApiKey.trim())
-    onNext()
-  }
-
-  const hasAnyKey = primaryApiKey.trim() || apiKeys.length > 0
+  const hasAnyKey = primaryApiKey.trim() || extras.some(e => e.value.trim())
 
   return (
     <div className="space-y-7">
@@ -394,135 +377,48 @@ function StepApiKey({ formData, update, onBack, onNext }: any) {
         </p>
       </div>
 
-      {/* Primary API Key */}
       <div className="space-y-4">
-        <div className="text-[13px] font-medium text-muted-foreground">Primary API Key</div>
         <Input
-          label="Google AI Studio API key"
+          label="Primary API key"
           value={primaryApiKey}
           onChange={(v: string) => setPrimaryApiKey(v.trim())}
           placeholder="AIza..."
           type="password"
-          hint="This will be your main API key. Create one at aistudio.google.com"
+          hint="Create one at aistudio.google.com"
         />
-      </div>
 
-      {/* Additional API Keys */}
-      <div className="space-y-4">
-        <div className="flex items-center justify-between">
-          <div className="text-[13px] font-medium text-muted-foreground">Additional API Keys</div>
-          <div className="flex items-center gap-2">
-            <button
-              onClick={handleDetectTier}
-              disabled={detectingTier}
-              className="flex items-center gap-1.5 text-xs text-muted-foreground/60 hover:text-foreground transition-colors disabled:opacity-50"
+        {extras.map((k, i) => (
+          <div key={k.id ?? `new-${i}`} className="flex gap-2">
+            <div
+              className="flex-1 rounded-2xl bg-white/[0.02] ring-1 ring-white/[0.06] transition-all duration-500 focus-within:ring-white/[0.15] focus-within:bg-white/[0.035]"
+              style={{ transitionTimingFunction: EASE }}
             >
-              {detectingTier ? (
-                <span className="animate-pulse">Detecting...</span>
-              ) : (
-                <>
-                  <Save className="size-3.5" />
-                  Detect Tiers
-                </>
-              )}
-            </button>
-            <button
-              onClick={() => setShowAddKeyForm(!showAddKeyForm)}
-              className="flex items-center gap-1.5 text-xs text-muted-foreground/60 hover:text-foreground transition-colors"
-            >
-              <Plus className="size-3.5" />
-              Add Key
-            </button>
-          </div>
-        </div>
-
-        {showAddKeyForm && (
-          <div className="space-y-3 p-4 bg-white/[0.02] border border-white/[0.06] rounded-xl">
-            <input
-              type="text"
-              value={newKeyName}
-              onChange={(e) => setNewKeyName(e.target.value)}
-              placeholder="Key name (e.g., Personal, Work)"
-              className="w-full bg-white/[0.02] border border-white/[0.06] rounded-lg px-4 py-2 text-sm text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:border-white/[0.12] transition-colors"
-            />
-            <input
-              type="password"
-              value={newKeyKey}
-              onChange={(e) => setNewKeyKey(e.target.value)}
-              placeholder="API key"
-              className="w-full bg-white/[0.02] border border-white/[0.06] rounded-lg px-4 py-2 text-sm text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:border-white/[0.12] transition-colors"
-            />
-            <div className="flex gap-2">
-              <button
-                onClick={handleAddApiKey}
-                disabled={addingKey || !newKeyName.trim() || !newKeyKey.trim()}
-                className="flex items-center gap-2 px-4 py-2 bg-foreground text-background rounded-lg text-sm font-medium hover:opacity-90 transition-opacity disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                {addingKey ? <span className="animate-pulse">Adding...</span> : 'Add Key'}
-              </button>
-              <button
-                onClick={() => {
-                  setShowAddKeyForm(false)
-                  setNewKeyName('')
-                  setNewKeyKey('')
-                }}
-                className="px-4 py-2 text-sm text-muted-foreground/60 hover:text-foreground transition-colors"
-              >
-                Cancel
-              </button>
+              <input
+                type="password"
+                value={k.value}
+                onChange={(e) => updateExtra(i, e.target.value)}
+                placeholder="AIza..."
+                className="w-full bg-transparent px-4 py-3 text-sm text-foreground placeholder:text-muted-foreground/40 outline-none"
+              />
             </div>
+            <button
+              onClick={() => removeExtra(i)}
+              aria-label="Remove key"
+              className="px-3 rounded-2xl text-muted-foreground/40 hover:text-foreground hover:bg-white/[0.03] transition-colors"
+            >
+              <Trash2 className="size-4" />
+            </button>
           </div>
-        )}
+        ))}
 
-        {apiKeys.length > 0 ? (
-          <div className="space-y-2">
-            {apiKeys.map((key) => (
-              <div key={key.id} className="flex items-center justify-between p-4 bg-white/[0.02] border border-white/[0.06] rounded-lg">
-                <div className="flex items-center gap-3">
-                  <div className={`size-2 rounded-full ${key.tier === 'pro' ? 'bg-emerald-500' : key.tier === 'free' ? 'bg-amber-500' : 'bg-foreground/40'}`} />
-                  <div>
-                    <div className="flex items-center gap-2">
-                      <div className="text-sm font-medium text-foreground/80">{key.name}</div>
-                      {key.tier !== 'unknown' && (
-                        <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${key.tier === 'pro' ? 'bg-emerald-500/10 text-emerald-500' : 'bg-amber-500/10 text-amber-500'}`}>
-                          {key.tier.toUpperCase()}
-                        </span>
-                      )}
-                    </div>
-                    <div className="flex items-center gap-2 mt-1">
-                      {key.last_used_at && (
-                        <div className="flex items-center gap-1 text-[11px] text-muted-foreground/50">
-                          <Clock className="size-3" />
-                          Used {new Date(key.last_used_at.replace(' ', 'T') + 'Z').toLocaleDateString()}
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                </div>
-                <button
-                  onClick={() => handleRemoveApiKey(key.id)}
-                  className="p-2 text-muted-foreground/40 hover:text-foreground transition-colors"
-                >
-                  <Trash2 className="size-4" />
-                </button>
-              </div>
-            ))}
-          </div>
-        ) : (
-          <p className="text-[12px] text-muted-foreground/40">
-            No additional API keys. Add multiple keys to increase your rate limits.
-          </p>
-        )}
+        <button
+          onClick={addExtra}
+          className="flex items-center gap-1.5 text-xs text-muted-foreground/60 hover:text-foreground transition-colors"
+        >
+          <Plus className="size-3.5" />
+          Add more API key
+        </button>
       </div>
-
-      <button
-        type="button"
-        onClick={() => window.open('https://aistudio.google.com/apikey', '_blank', 'noopener,noreferrer')}
-        className="flex items-center gap-2 text-[12px] text-muted-foreground/60 hover:text-foreground transition-colors"
-      >
-        <ShieldAlert className="size-3.5" strokeWidth={1.75} />
-        <span>Open AI Studio key page</span>
-      </button>
 
       <div className="flex items-center gap-3 pt-1">
         <button
@@ -532,8 +428,8 @@ function StepApiKey({ formData, update, onBack, onNext }: any) {
         >
           Back
         </button>
-        <PrimaryButton onClick={handleContinue} disabled={!hasAnyKey} className="flex-1 bg-foreground text-background py-3.5">
-          Continue
+        <PrimaryButton onClick={handleContinue} disabled={!hasAnyKey || saving} className="flex-1 bg-foreground text-background py-3.5">
+          {saving ? 'Saving...' : 'Continue'}
         </PrimaryButton>
       </div>
     </div>
@@ -570,7 +466,7 @@ interface ChatMessage {
 }
 
 const toolIcons: Record<string, any> = {
-  install_twitter_cli: Download, install_rdt_cli: Download,
+  connect_twitter: Download, connect_reddit: Download,
   twitter_search: SearchIcon, twitter_user: AtSign, twitter_user_posts: List,
   twitter_status: BadgeCheck, twitter_whoami: BadgeCheck,
   twitter_followers: Users, twitter_following: Users, twitter_likes: Heart,
@@ -578,11 +474,11 @@ const toolIcons: Record<string, any> = {
   twitter_tweet: Eye, twitter_post: Send, twitter_reply: CornerUpLeft, twitter_quote: Send,
   twitter_feed: Newspaper, twitter_like: Heart, twitter_retweet: Repeat2, twitter_bookmark: Bookmark, twitter_bookmarks: Bookmark,
   twitter_follow: UserPlus, twitter_replies: CornerUpLeft,
-  rdt_search: SearchIcon, rdt_sub: Layers, rdt_sub_info: Info, rdt_read: BookOpen,
-  rdt_user: AtSign, rdt_user_posts: List, rdt_user_comments: MessageCircle,
-  rdt_login: BadgeCheck, rdt_whoami: BadgeCheck, rdt_feed: Newspaper, rdt_popular: Flame,
-  rdt_all: GlobeIcon, rdt_saved: Bookmark, rdt_upvoted: ThumbsUp,
-  rdt_comment: Send, rdt_upvote: ThumbsUp, rdt_save: Bookmark, rdt_subscribe: UserPlus,
+  reddit_search: SearchIcon, reddit_sub: Layers, reddit_sub_info: Info, reddit_read: BookOpen,
+  reddit_user: AtSign, reddit_user_posts: List, reddit_user_comments: MessageCircle,
+  reddit_login: BadgeCheck, reddit_whoami: BadgeCheck, reddit_feed: Newspaper, reddit_popular: Flame,
+  reddit_all: GlobeIcon, reddit_saved: Bookmark, reddit_upvoted: ThumbsUp,
+  reddit_comment: Send, reddit_upvote: ThumbsUp, reddit_save: Bookmark, reddit_subscribe: UserPlus,
   read_profile: AtSign, read_hooks: Lightbulb, read_voice_rules: MessageCircle,
   read_pillars: Layers, read_algorithm: Gauge, read_targets: Crosshair,
   read_replies: CornerUpLeft, read_social_content: Database, read_memory: Database,
@@ -597,7 +493,7 @@ function getToolIcon(name: string) {
   return toolIcons[name] || GlobeIcon
 }
 
-function StepAiOnboarding({ formData, onComplete }: { formData: any; onComplete: (sessionId?: number) => void }) {
+function StepAiOnboarding({ formData, onComplete, onBack }: { formData: any; onComplete: (sessionId?: number) => void; onBack: () => void }) {
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [steps, setSteps] = useState<StepItem[]>([])
   const [streamText, setStreamText] = useState('')
@@ -607,10 +503,14 @@ function StepAiOnboarding({ formData, onComplete }: { formData: any; onComplete:
   const [error, setError] = useState<string | null>(null)
   const [complete, setComplete] = useState(false)
   const [savedConversationState, setSavedConversationState] = useState<any[] | null>(null)
+  const [pendingAuth, setPendingAuth] = useState<{ id: string; twitter: { needed: boolean; ok: boolean }; reddit: { needed: boolean; ok: boolean } } | null>(null)
+  const [transientRetry, setTransientRetry] = useState<{ attempt: number; maxAttempts: number; backoffMs: number; model: string } | null>(null)
+  const mountedRef = useRef(true)
 
   const stepsRef = useRef<StepItem[]>([])
   const stepCounter = useRef(0)
   const streamTextRef = useRef('')
+  const messagesRef = useRef<ChatMessage[]>([])
   const [inputEl, setInputEl] = useState<HTMLDivElement | null>(null)
   const [inputAreaHeight, setInputAreaHeight] = useState(0)
   const [scrollbarW, setScrollbarW] = useState(6)
@@ -672,22 +572,27 @@ function StepAiOnboarding({ formData, onComplete }: { formData: any; onComplete:
     setError(null)
     setComplete(false)
     setSavedConversationState(null) // Clear saved state on fresh start
+    setTransientRetry(null)
 
     window.api.runOnboarding(formData)
       .then(result => {
+        if (!mountedRef.current) return
         setStreaming(false)
         if (result?.success) {
           commitStreamingMessage()
           setComplete(true)
+        } else if (result?.aborted) {
+          // user backed out of the auth gate; parent already navigated away
         } else {
           setError(result?.error || 'Failed to complete onboarding')
         }
       })
       .catch(err => {
+        if (!mountedRef.current) return
         setStreaming(false)
         setError(err.message || 'An error occurred during onboarding')
-        // Save conversation state for retry
-        setSavedConversationState(messages.map(m => ({
+        // Save conversation state for retry (use the ref so we get the latest, not the stale closure)
+        setSavedConversationState(messagesRef.current.map(m => ({
           role: m.role,
           content: m.content,
           steps: m.steps
@@ -710,19 +615,23 @@ function StepAiOnboarding({ formData, onComplete }: { formData: any; onComplete:
     // Continue with current context - pass existing messages
     window.api.runOnboarding(formData, messagesToContinue)
       .then(result => {
+        if (!mountedRef.current) return
         setStreaming(false)
         if (result?.success) {
           commitStreamingMessage()
           setComplete(true)
+        } else if (result?.aborted) {
+          // no-op
         } else {
           setError(result?.error || 'Failed to complete onboarding')
         }
       })
       .catch(err => {
+        if (!mountedRef.current) return
         setStreaming(false)
         setError(err.message || 'An error occurred during onboarding')
-        // Save conversation state for retry
-        setSavedConversationState(messages.map(m => ({
+        // Save conversation state for retry (use the ref so we get the latest, not the stale closure)
+        setSavedConversationState(messagesRef.current.map(m => ({
           role: m.role,
           content: m.content,
           steps: m.steps
@@ -731,11 +640,21 @@ function StepAiOnboarding({ formData, onComplete }: { formData: any; onComplete:
   }
 
   useEffect(() => {
+    // Reset on every mount; StrictMode unmounts/remounts effects in dev, and the
+    // cleanup below would otherwise leave this false and silence the run's .then().
+    mountedRef.current = true
+    return () => { mountedRef.current = false }
+  }, [])
+
+  useEffect(() => { messagesRef.current = messages }, [messages])
+
+  useEffect(() => {
     // Show initial loading state immediately
     setSteps([{ type: 'reasoning', text: 'Initializing onboarding...' }])
 
     window.api.onOnboardingChunk((text) => {
     if (text === 'PHASE:gather' || text === 'PHASE:interview') return
+    setTransientRetry(null)   // stream resumed → clear high-demand banner
     streamTextRef.current += text
     setStreamText(streamTextRef.current)
   })
@@ -777,6 +696,14 @@ function StepAiOnboarding({ formData, onComplete }: { formData: any; onComplete:
       setPendingQuestions(payload.questions)
     })
 
+    window.api.onOnboardingAuthRequired((payload) => {
+      setPendingAuth(payload)
+    })
+
+    window.api.onOnboardingTransientRetry((info) => {
+      setTransientRetry(info)
+    })
+
     // Start onboarding after a brief delay to allow UI to render
     const timer = setTimeout(() => {
       startOnboarding()
@@ -789,6 +716,8 @@ function StepAiOnboarding({ formData, onComplete }: { formData: any; onComplete:
       window.api.removeAllListeners('onboarding:toolResult')
       window.api.removeAllListeners('onboarding:reasoning')
       window.api.removeAllListeners('onboarding:question')
+      window.api.removeAllListeners('onboarding:authRequired')
+      window.api.removeAllListeners('onboarding:transientRetry')
     }
   }, [])
 
@@ -868,10 +797,10 @@ function StepAiOnboarding({ formData, onComplete }: { formData: any; onComplete:
             </Message>
           ))}
 
-          {streaming && !pendingQuestions && (
+          {streaming && !pendingQuestions && !pendingAuth && (
             <Message from="assistant">
               <MessageContent>
-                {hasActivity ? (
+                {(hasActivity || transientRetry) ? (
                   <div className="flex flex-col gap-1.5 mb-2">
                     {steps.map((step, si) => {
                       const hide =
@@ -880,7 +809,17 @@ function StepAiOnboarding({ formData, onComplete }: { formData: any; onComplete:
                       if (hide) return null
                       return renderStep(step, si, si === steps.length - 1 && streaming)
                     })}
-                    {allToolsDone && !streamText && (
+                    {transientRetry && (
+                      <TransientRetryStep
+                        key={transientRetry.attempt}
+                        attempt={transientRetry.attempt}
+                        maxAttempts={transientRetry.maxAttempts}
+                        backoffMs={transientRetry.backoffMs}
+                        model={transientRetry.model}
+                        onExpire={() => setTransientRetry(null)}
+                      />
+                    )}
+                    {allToolsDone && !streamText && !transientRetry && (
                       <div className="flex items-center gap-2 text-xs text-muted-foreground pt-1">
                         <div className="w-3 h-3 border-2 border-muted-foreground border-t-transparent rounded-full animate-spin" />
                         <span>Continuing...</span>
@@ -891,7 +830,7 @@ function StepAiOnboarding({ formData, onComplete }: { formData: any; onComplete:
 
                 {streamText && <RichContent isAnimating>{streamText}</RichContent>}
 
-                {!hasActivity && !streamText && (
+                {!hasActivity && !streamText && !transientRetry && (
                   <div className="flex items-center gap-1 py-2">
                     <div className="w-2 h-2 bg-muted-foreground rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
                     <div className="w-2 h-2 bg-muted-foreground rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
@@ -915,7 +854,50 @@ function StepAiOnboarding({ formData, onComplete }: { formData: any; onComplete:
         }}
       >
         <div ref={setInputEl} className="max-w-3xl mx-auto flex justify-center">
-          {error ? (
+          {pendingAuth ? (
+            <div className="w-full max-w-md rounded-2xl px-5 py-4 pointer-events-auto animate-in fade-in slide-in-from-bottom-2 duration-500"
+                 style={{ animationTimingFunction: EASE, background: 'rgba(255,255,255,0.02)', boxShadow: 'inset 0 0 0 1px rgba(255,255,255,0.08)' }}>
+              {(() => {
+                const need = [pendingAuth.twitter.needed && 'X', pendingAuth.reddit.needed && 'Reddit'].filter(Boolean) as string[]
+                const fail = [
+                  pendingAuth.twitter.needed && !pendingAuth.twitter.ok && 'X not connected',
+                  pendingAuth.reddit.needed && !pendingAuth.reddit.ok && 'Reddit not connected',
+                ].filter(Boolean) as string[]
+                return (
+                  <>
+                    <div className="text-sm text-foreground/90 leading-relaxed">
+                      Log into {need.join(' and ')} in your browser, then confirm below so Soxial can connect.
+                    </div>
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      {fail.map((f) => (
+                        <span key={f} className="inline-flex items-center gap-1.5 text-[11px] text-amber-500/90 px-2 py-1 rounded-sm bg-amber-500/10">
+                          <ShieldAlert className="size-3" /> {f}
+                        </span>
+                      ))}
+                    </div>
+                    <div className="mt-4 flex items-center gap-3">
+                      <button
+                        onClick={() => { window.api.retryOnboardingAuth(pendingAuth.id, false); setPendingAuth(null); onBack() }}
+                        className="px-4 py-2.5 rounded-full text-sm text-muted-foreground hover:text-foreground transition-colors"
+                      >
+                        Back
+                      </button>
+                      <button
+                        onClick={() => { window.api.retryOnboardingAuth(pendingAuth.id, true); setPendingAuth(null) }}
+                        className="group flex items-center gap-2 px-4 py-2.5 rounded-full bg-foreground text-background text-sm font-semibold transition-all active:scale-[0.98] hover:opacity-90"
+                        style={{ transitionTimingFunction: EASE }}
+                      >
+                        Logged in
+                        <span className="w-5 h-5 rounded-full bg-primary-foreground/15 flex items-center justify-center">
+                          <ArrowRight className="size-3" strokeWidth={2} />
+                        </span>
+                      </button>
+                    </div>
+                  </>
+                )
+              })()}
+            </div>
+          ) : error ? (
             <div
               className="flex items-center justify-between gap-3 w-full max-w-md rounded-2xl px-4 py-3 pointer-events-auto animate-in fade-in slide-in-from-bottom-2 duration-500"
               style={{ animationTimingFunction: EASE, background: 'rgba(239,68,68,0.04)', boxShadow: 'inset 0 0 0 1px rgba(239,68,68,0.15)' }}

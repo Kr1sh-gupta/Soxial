@@ -10,6 +10,7 @@ import {
   ConversationScrollButton,
 } from "src/components/ai-elements/conversation";
 import { RichContent } from "src/components/rich-content";
+import { TransientRetryStep } from "src/components/ui/transient-retry-step";
 import { PromptInput } from "src/components/ui/prompt-input";
 import { PostAttachments } from "src/components/ui/post-attachment";
 import {
@@ -216,26 +217,26 @@ const toolIcons: Record<string, any> = {
   twitter_retweet: Repeat2,
   twitter_bookmark: Bookmark,
   twitter_follow: UserPlus,
-  install_twitter_cli: Download,
-  install_rdt_cli: Download,
-  rdt_search: SearchIcon,
-  rdt_sub: Layers,
-  rdt_sub_info: Info,
-  rdt_read: BookOpen,
-  rdt_user: AtSign,
-  rdt_user_posts: List,
-  rdt_user_comments: MessageCircle,
-  rdt_login: BadgeCheck,
-  rdt_whoami: BadgeCheck,
-  rdt_feed: Newspaper,
-  rdt_popular: Flame,
-  rdt_all: GlobeIcon,
-  rdt_saved: Bookmark,
-  rdt_upvoted: ThumbsUp,
-  rdt_comment: Send,
-  rdt_upvote: ThumbsUp,
-  rdt_save: Bookmark,
-  rdt_subscribe: UserPlus,
+  connect_twitter: Download,
+  connect_reddit: Download,
+  reddit_search: SearchIcon,
+  reddit_sub: Layers,
+  reddit_sub_info: Info,
+  reddit_read: BookOpen,
+  reddit_user: AtSign,
+  reddit_user_posts: List,
+  reddit_user_comments: MessageCircle,
+  reddit_login: BadgeCheck,
+  reddit_whoami: BadgeCheck,
+  reddit_feed: Newspaper,
+  reddit_popular: Flame,
+  reddit_all: GlobeIcon,
+  reddit_saved: Bookmark,
+  reddit_upvoted: ThumbsUp,
+  reddit_comment: Send,
+  reddit_upvote: ThumbsUp,
+  reddit_save: Bookmark,
+  reddit_subscribe: UserPlus,
   // Strategy reads
   read_profile: AtSign,
   read_hooks: Lightbulb,
@@ -276,9 +277,13 @@ function getToolIcon(name: string) {
 function MainScreen({
   suggestions,
   onSend,
+  selectedModel,
+  selectedEffort,
 }: {
   suggestions: string[];
-  onSend: (text: string) => void;
+  onSend: (text: string, model: string, effort: string) => void;
+  selectedModel: string;
+  selectedEffort: string;
 }) {
   return (
     <div className="flex-1 flex flex-col items-center justify-center px-6 pb-40">
@@ -297,7 +302,7 @@ function MainScreen({
             {suggestions.map((s, i) => (
               <button
                 key={i}
-                onClick={() => onSend(s)}
+                onClick={() => onSend(s, selectedModel, selectedEffort)}
                 className="px-4 py-2 rounded-full text-xs font-medium text-muted-foreground/60 border border-white/[0.06] hover:border-white/[0.15] hover:text-foreground transition-premium-fast bg-white/[0.02] hover:bg-white/[0.04] haptic-lift"
               >
                 {s}
@@ -343,6 +348,7 @@ export default function Chat({ initialSessionId }: { initialSessionId?: number |
   const [apiTier, setApiTier] = useState<{ tier: string } | null>(null);
   const [availableModels, setAvailableModels] = useState<string[]>([]);
   const [modelExhaustionStatus, setModelExhaustionStatus] = useState<Record<string, { exhausted: boolean; availableAt: string | null }>>({});
+  const [transientRetry, setTransientRetry] = useState<{ attempt: number; maxAttempts: number; backoffMs: number; model: string } | null>(null);
 
   function parseAttachments(raw: any): ChatAttachment[] | undefined {
     if (!raw) return undefined;
@@ -633,6 +639,7 @@ export default function Chat({ initialSessionId }: { initialSessionId?: number |
     });
     window.api.onChatError((error) => {
       setStreaming(false);
+      setTransientRetry(null);
       setMessages((prev) => [
         ...prev,
         { role: "assistant", content: `Error: ${error}` },
@@ -650,6 +657,9 @@ export default function Chat({ initialSessionId }: { initialSessionId?: number |
       stepsRef.current = [...stepsRef.current, step];
       setSteps([...stepsRef.current]);
       setPendingQuestion(q);
+    });
+    window.api.onChatTransientRetry((info) => {
+      setTransientRetry(info);
     });
     window.api.onChatInjected((injected: any[]) => {
       const injectedContents = injected
@@ -739,6 +749,7 @@ export default function Chat({ initialSessionId }: { initialSessionId?: number |
       window.api.removeAllListeners("chat:reasoning");
       window.api.removeAllListeners("chat:error");
       window.api.removeAllListeners("chat:question");
+      window.api.removeAllListeners("chat:transientRetry");
       window.api.removeAllListeners("chat:injected");
     };
   }, []);
@@ -830,6 +841,7 @@ export default function Chat({ initialSessionId }: { initialSessionId?: number |
     stepCounter.current = 0;
     setStreaming(true);
     setStreamText("");
+    setTransientRetry(null);
     stepsRef.current = [];
     setSteps([]);
 
@@ -870,6 +882,7 @@ export default function Chat({ initialSessionId }: { initialSessionId?: number |
     }
 
     window.api.onChatChunk((text) => {
+      setTransientRetry(null); // stream resumed → clear high-demand banner
       streamTextRef.current += text;
       setStreamText((prev) => prev + text);
       const s = stepsRef.current;
@@ -995,7 +1008,9 @@ export default function Chat({ initialSessionId }: { initialSessionId?: number |
             {onMainScreen ? (
               <MainScreen
                 suggestions={quickActions}
-                onSend={(text) => send(text)}
+                onSend={(text, model, effort) => send(text, model, effort)}
+                selectedModel={selectedModel}
+                selectedEffort={selectedEffort}
               />
             ) : (
               <Conversation className="flex-1">
@@ -1090,7 +1105,7 @@ export default function Chat({ initialSessionId }: { initialSessionId?: number |
                       {streaming && (
                         <Message from="assistant">
                           <MessageContent>
-                            {hasActivity ? (
+                            {(hasActivity || transientRetry) ? (
                               <div className="flex flex-col gap-1.5 mb-2">
                                 {steps.map((step, si) => {
                                   const hide = (step.type === "reasoning" || step.type === "tool") && 
@@ -1158,7 +1173,17 @@ export default function Chat({ initialSessionId }: { initialSessionId?: number |
                                     />
                                   ) : null;
                                 })}
-                                {allToolsDone && !streamText && (
+                                {transientRetry && (
+                                  <TransientRetryStep
+                                    key={transientRetry.attempt}
+                                    attempt={transientRetry.attempt}
+                                    maxAttempts={transientRetry.maxAttempts}
+                                    backoffMs={transientRetry.backoffMs}
+                                    model={transientRetry.model}
+                                    onExpire={() => setTransientRetry(null)}
+                                  />
+                                )}
+                                {allToolsDone && !streamText && !transientRetry && (
                                   <div className="flex items-center gap-2 text-xs text-muted-foreground pt-1">
                                     <div className="w-3 h-3 border-2 border-muted-foreground border-t-transparent rounded-full animate-spin" />
                                     <span>Continuing...</span>
@@ -1167,7 +1192,7 @@ export default function Chat({ initialSessionId }: { initialSessionId?: number |
                               </div>
                             ) : null}
 
-                            {!hasActivity && !streamText && (
+                            {!hasActivity && !streamText && !transientRetry && (
                               <div className="flex items-center gap-1.5 py-2">
                                 <div className="w-1.5 h-1.5 rounded-full bg-muted-foreground/40 animate-pulse" style={{ animationDelay: '0ms', animationDuration: '1.2s' }} />
                                 <div className="w-1.5 h-1.5 rounded-full bg-muted-foreground/40 animate-pulse" style={{ animationDelay: '200ms', animationDuration: '1.2s' }} />
@@ -1207,7 +1232,7 @@ export default function Chat({ initialSessionId }: { initialSessionId?: number |
                       : "Message Soxial..."
                   }
                   models={availableModels.length > 0 ? availableModels : ["Gemini 3.1 Flash Lite"]}
-                  modelSupportsEffort={(model) => model !== "Gemini 3.1 Pro"}
+                  modelSupportsEffort={(model) => model !== "gemini-3.1-pro"}
                   isStreaming={streaming}
                   onStop={handleStop}
                   queue={queuedMessages}
@@ -1220,6 +1245,8 @@ export default function Chat({ initialSessionId }: { initialSessionId?: number |
                   onAnswer={handleAnswer}
                   onSubmit={(value, meta) => send(value, meta.model, meta.effort, meta.attachments)}
                   modelExhaustionStatus={modelExhaustionStatus}
+                  onModelChange={(model) => setSelectedModel(model)}
+                  onEffortChange={(effort) => setSelectedEffort(effort)}
                 />
               </div>
             </div>

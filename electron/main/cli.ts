@@ -145,7 +145,7 @@ export interface CliResult {
   error?: string
 }
 
-/** Run twitter CLI. Compact `-c` is a global flag and must precede the subcommand. */
+/** Run the X connector. Compact `-c` is a global flag and must precede the subcommand. */
 export async function runTwitterCli(args: string[], options?: { compact?: boolean }): Promise<CliResult> {
   const compact = options?.compact !== false
   const fullArgs = compact ? ['-c', ...args] : args
@@ -173,7 +173,7 @@ export function checkCliAuth(bin: 'twitter' | 'rdt'): Promise<CliResult> {
   return runCli('rdt', ['status', '--json'])
 }
 
-/** Extract browser cookies via `rdt login` (rdt-cli auth command). Idempotent when already authenticated. */
+/** Establish the Reddit session from browser cookies. Idempotent when already authenticated. */
 export async function ensureRdtAuth(): Promise<CliResult> {
   logger.info('cli', 'rdt login — extracting browser cookies')
   await runCli('rdt', ['login'])

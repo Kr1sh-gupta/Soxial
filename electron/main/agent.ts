@@ -52,18 +52,18 @@ export interface AgentConfig {
   tier: string
 }
 
-export function getApiKey(model?: string, excludeApiKeyId?: number): { apiKey: string; apiKeyId: number | null } {
+export function getApiKey(model?: string, excludeApiKeyIds?: number[]): { apiKey: string; apiKeyId: number | null } {
   const profile = getProfile()
 
   if (model) {
     const requiredTier = model === 'gemini-3.1-pro' ? 'pro' : undefined
-    const availableKey = getAvailableApiKeyForModel(model, requiredTier, excludeApiKeyId)
+    const availableKey = getAvailableApiKeyForModel(model, requiredTier, excludeApiKeyIds)
     if (availableKey) {
       updateApiKeyLastUsed(availableKey.id)
       logger.info('agent', `getApiKey: using API key ${availableKey.id} for model ${model}`)
       return { apiKey: availableKey.api_key, apiKeyId: availableKey.id }
     } else {
-      logger.warn('agent', `getApiKey: no available API key found for model ${model} (tier: ${requiredTier}, exclude: ${excludeApiKeyId})`)
+      logger.warn('agent', `getApiKey: no available API key found for model ${model} (tier: ${requiredTier}, exclude: ${JSON.stringify(excludeApiKeyIds)})`)
     }
   }
 
@@ -546,6 +546,77 @@ function isRateLimitError(e: any): boolean {
   )
 }
 
+// ─── Transient / retryable error detection ──────────────────────────────────
+// Overload, 5xx, network glitches: worth retrying the SAME key+model after a backoff
+// before rotating keys or falling back to a different model.
+function isTransientError(e: any): boolean {
+  const errorMessage = (e?.message || '').toLowerCase()
+  const status = e?.status || e?.statusCode || e?.code
+  const errorData = e?.error || e?.data?.error
+  const errorStatus = errorData?.status || errorData?.code
+
+  if ([500, 502, 503, 504].includes(status as number) || [500, 502, 503, 504].includes(errorStatus as number)) return true
+  if (status === 'UNAVAILABLE' || errorStatus === 'UNAVAILABLE') return true
+  if (status === 'INTERNAL' || errorStatus === 'INTERNAL') return true
+  if (status === 'DEADLINE_EXCEEDED' || errorStatus === 'DEADLINE_EXCEEDED') return true
+  if (
+    errorMessage.includes('high demand') ||
+    errorMessage.includes('overloaded') ||
+    errorMessage.includes('try again later') ||
+    errorMessage.includes('temporarily') ||
+    errorMessage.includes('service unavailable') ||
+    errorMessage.includes('internal error') ||
+    errorMessage.includes('backend error') ||
+    errorMessage.includes('bad gateway') ||
+    errorMessage.includes('gateway timeout') ||
+    errorMessage.includes('deadline exceeded')
+  ) return true
+  if (
+    errorMessage.includes('fetch failed') ||
+    errorMessage.includes('econnreset') ||
+    errorMessage.includes('etimedout') ||
+    errorMessage.includes('enotfound') ||
+    errorMessage.includes('network') ||
+    errorMessage.includes('socket') ||
+    errorMessage.includes('headers timeout') ||
+    errorMessage.includes('cannot connect') ||
+    errorMessage.includes('connection') ||
+    errorMessage.includes('timeout')
+  ) return true
+  return false
+}
+
+// 401/403: the API key itself is bad (revoked, wrong, disabled). Don't retry it —
+// rotate to another key (which may be valid for the same model).
+function isAuthError(e: any): boolean {
+  const status = e?.status || e?.statusCode || e?.code
+  const errorData = e?.error || e?.data?.error
+  const errorStatus = errorData?.status || errorData?.code
+  if ([401, 403].includes(status as number) || [401, 403].includes(errorStatus as number)) return true
+  if (status === 'UNAUTHENTICATED' || errorStatus === 'UNAUTHENTICATED') return true
+  if (status === 'PERMISSION_DENIED' || errorStatus === 'PERMISSION_DENIED') return true
+  const msg = (e?.message || '').toLowerCase()
+  return (
+    msg.includes('api key not valid') ||
+    msg.includes('api_key_invalid') ||
+    msg.includes('invalid api key') ||
+    msg.includes('permission denied') ||
+    msg.includes('unauthenticated') ||
+    msg.includes('account credentials not found')
+  )
+}
+
+const MAX_TRANSIENT_RETRIES = 5
+
+// Sleep that resolves early if the run is aborted, so backoff waits don't block teardown.
+function abortableSleep(ms: number, ac?: AbortController): Promise<void> {
+  return new Promise((resolve) => {
+    if (ac?.signal.aborted) { resolve(); return }
+    const t = setTimeout(resolve, ms)
+    if (ac) ac.signal.addEventListener('abort', () => { clearTimeout(t); resolve() }, { once: true })
+  })
+}
+
 // ─── Main agent loop — AI SDK streamText with multi-step tools ──────────────
 // streamText with stopWhen handles the entire tool-calling loop internally.
 // We wrap it with model fallback + API key rotation for rate limit resilience.
@@ -557,6 +628,7 @@ export async function runAgent(
   onDone: (fullText: string) => void,
   onError: (error: string) => void,
   onReasoning?: (text: string) => void,
+  onTransientRetry?: (info: { attempt: number; maxAttempts: number; backoffMs: number; model: string }) => void,
   options?: AgentOptions,
   toolsOverride?: Record<string, any>,
   systemPromptOverride?: string,
@@ -600,6 +672,7 @@ export async function runAgent(
     if (stored) logger.info('agent', `history mismatch (stored userCount ${stored.userCount} vs ${userCount}), rebuilding from messages`)
   }
 
+  let modelMessages = baseMessages
   let fullText = ''
 
   for (let i = 0; i < fallbackChain.length; i++) {
@@ -625,10 +698,10 @@ export async function runAgent(
         apiKey = info.apiKey
         apiKeyId = info.apiKeyId
       } else {
-        const excludeId = [...triedKeyIds].find(v => v != null && v !== apiKeyId)
-        const candidate = getAvailableApiKeyForModel(currentModel, requiredTier, excludeId as number | undefined)
+        const triedNumIds = [...triedKeyIds].filter((v): v is number => v != null)
+        const candidate = getAvailableApiKeyForModel(currentModel, requiredTier, triedNumIds)
         if (!candidate) {
-          logger.warn('agent', `No more API keys available for ${currentModel}`)
+          logger.warn('agent', `No more API keys available for ${currentModel} (tried ${triedNumIds.length})`)
           break
         }
         apiKey = candidate.api_key
@@ -638,121 +711,175 @@ export async function runAgent(
 
       triedKeyIds.add(apiKeyId)
       keyAttempts++
-      fullText = ''
 
-      try {
-        const result = streamText({
-          model: createGoogle({ apiKey }).interactions(currentModel),
-          system,
-          messages: baseMessages,
-          tools: aiTools,
-          stopWhen: isStepCount(maxSteps),
-          temperature: 0.3,
-          maxOutputTokens: 8192,
-          maxRetries: 0,
-          timeout: { chunkMs: 120000 },
-          ...(abortController ? { abortSignal: abortController.signal } : {}),
-          providerOptions: {
-            google: {
-              store: false,
-              thinkingLevel: thinkingLevel,
-              thinkingSummaries: 'auto',
+      let transientRetries = 0
+      let nextModel = false
+
+      // Inner loop: on transient (high-demand / 5xx / network) errors, wait with backoff
+      // and retry the SAME key+model up to MAX_TRANSIENT_RETRIES times before rotating.
+      while (true) {
+        fullText = ''
+        let result: any = null
+
+        try {
+          result = streamText({
+            model: createGoogle({ apiKey })(currentModel),
+            system,
+            messages: modelMessages,
+            tools: aiTools,
+            stopWhen: isStepCount(maxSteps),
+            temperature: 0.3,
+            maxOutputTokens: 8192,
+            maxRetries: 0,
+            ...(abortController ? { abortSignal: abortController.signal } : {}),
+            providerOptions: {
+              google: {
+                thinkingConfig: {
+                  thinkingLevel: thinkingLevel,
+                  includeThoughts: true,
+                },
+              },
             },
-          },
-          prepareStep: ({ stepNumber, messages: stepMessages }) => {
-            if (stepNumber > 0 && drainInjectedMessages) {
-              const injected = drainInjectedMessages()
-              if (injected.length > 0) {
-                logger.info('agent', `injected ${injected.length} message(s) into active run`)
-                onInjectedMessages?.(injected)
-                return { messages: [...stepMessages, ...toModelMessagesSync(injected)] }
+            prepareStep: ({ stepNumber, messages: stepMessages }) => {
+              if (stepNumber > 0 && drainInjectedMessages) {
+                const injected = drainInjectedMessages()
+                if (injected.length > 0) {
+                  logger.info('agent', `injected ${injected.length} message(s) into active run`)
+                  onInjectedMessages?.(injected)
+                  return { messages: [...stepMessages, ...toModelMessagesSync(injected)] }
+                }
               }
+            },
+            onError: ({ error }) => {
+              logger.error('agent', `stream error: ${(error as Error)?.message || error}`)
+            },
+          })
+
+          let streamError: any = null
+
+          for await (const part of result.stream) {
+            if (abortController?.signal.aborted) {
+              logger.info('agent', 'aborted during stream')
+              onDone(fullText)
+              return
             }
-          },
-          onError: ({ error }) => {
-            logger.error('agent', `stream error: ${(error as Error)?.message || error}`)
-          },
-        })
 
-        let streamError: any = null
+            switch (part.type) {
+              case 'text-delta':
+                fullText += part.text
+                onChunk(part.text)
+                break
+              case 'reasoning-delta':
+                onReasoning?.(part.text)
+                break
+              case 'tool-call':
+                onToolCall(part.toolName, part.input)
+                logger.info('agent', `tool-call: ${part.toolName}`, part.input)
+                break
+              case 'tool-result': {
+                const isImageTool = part.toolName === 'inspect_image_url'
+                const truncateLimit = SOCIAL_FETCH_TOOLS.has(part.toolName) || isImageTool ? Infinity : 15000
+                let outputForUi: any = part.output
+                if (isImageTool && outputForUi?.data) {
+                  outputForUi = { ...outputForUi, data: undefined, _note: 'Image sent to model via toModelOutput' }
+                }
+                const resultStr = JSON.stringify(outputForUi)
+                const truncated = resultStr.length > truncateLimit
+                  ? resultStr.slice(0, truncateLimit) + '...[truncated]'
+                  : outputForUi
+                onToolResult(part.toolName, truncated)
+                logger.info('agent', `tool-result: ${part.toolName}`)
+                break
+              }
+              case 'error':
+                streamError = part.error
+                break
+            }
+          }
 
-        for await (const part of result.stream) {
+          if (streamError) throw streamError
+
+          logger.info('agent', `done — ${fullText.length} chars total`)
+
+          // Persist accumulated messages for next turn's round-trip.
+          if (sessionId != null) {
+            try {
+              const responseMsgs = await result.responseMessages
+              updateChatSessionSteps(sessionId, [...modelMessages, ...responseMsgs], userCount)
+            } catch (e) { logger.error('agent', 'failed to persist steps', e) }
+          }
+
+          onDone(fullText)
+          return
+
+        } catch (e: any) {
           if (abortController?.signal.aborted) {
-            logger.info('agent', 'aborted during stream')
+            logger.info('agent', 'aborted by user')
             onDone(fullText)
             return
           }
 
-          switch (part.type) {
-            case 'text-delta':
-              fullText += part.text
-              onChunk(part.text)
-              break
-            case 'reasoning-delta':
-              onReasoning?.(part.text)
-              break
-            case 'tool-call':
-              onToolCall(part.toolName, part.input)
-              logger.info('agent', `tool-call: ${part.toolName}`, part.input)
-              break
-            case 'tool-result': {
-              const isImageTool = part.toolName === 'inspect_image_url'
-              const truncateLimit = SOCIAL_FETCH_TOOLS.has(part.toolName) || isImageTool ? Infinity : 15000
-              let outputForUi: any = part.output
-              if (isImageTool && outputForUi?.data) {
-                outputForUi = { ...outputForUi, data: undefined, _note: 'Image sent to model via toModelOutput' }
+          // Capture progress (tool calls, tool results, partial responses) from the
+          // failed attempt so retries, key rotations, and model fallbacks continue
+          // from here instead of restarting from scratch.
+          if (result) {
+            try {
+              const progressMsgs = await result.responseMessages
+              if (progressMsgs?.length > 0) {
+                modelMessages = [...modelMessages, ...progressMsgs]
+                logger.info('agent', `preserved ${progressMsgs.length} response message(s) from failed attempt (total: ${modelMessages.length})`)
               }
-              const resultStr = JSON.stringify(outputForUi)
-              const truncated = resultStr.length > truncateLimit
-                ? resultStr.slice(0, truncateLimit) + '...[truncated]'
-                : outputForUi
-              onToolResult(part.toolName, truncated)
-              logger.info('agent', `tool-result: ${part.toolName}`)
-              break
-            }
-            case 'error':
-              streamError = part.error
-              break
+            } catch { /* stream produced no response messages */ }
           }
-        }
 
-        if (streamError) throw streamError
+          if (isRateLimitError(e)) {
+            // 429: this key is quota-limited. Mark exhausted + rotate to another key.
+            logger.warn('agent', `${currentModel} hit rate limit for API key ${apiKeyId}, rotating key`, {
+              status: e?.status || e?.statusCode,
+              message: (e?.message || '').substring(0, 200),
+            })
+            try { markModelExhausted(currentModel, apiKeyId) } catch (err) { logger.error('agent', 'failed to mark model as exhausted', err) }
+            break
+          }
 
-        logger.info('agent', `done — ${fullText.length} chars total`)
+          if (isAuthError(e)) {
+            // 401/403: key invalid/disabled — not the model's fault. Skip it, rotate key.
+            logger.warn('agent', `${currentModel} auth error for API key ${apiKeyId}, rotating key`, {
+              error: (e?.message || '').substring(0, 200),
+              status: e?.status || e?.statusCode,
+            })
+            try { markModelExhausted(currentModel, apiKeyId) } catch (err) { logger.error('agent', 'failed to mark model as exhausted', err) }
+            break
+          }
 
-        // Persist accumulated messages for next turn's round-trip.
-        if (sessionId != null) {
-          try {
-            const responseMsgs = await result.responseMessages
-            updateChatSessionSteps(sessionId, [...baseMessages, ...responseMsgs], userCount)
-          } catch (e) { logger.error('agent', 'failed to persist steps', e) }
-        }
+          if (isTransientError(e)) {
+            // High-demand / 5xx / network: wait with backoff and retry the SAME key+model.
+            if (transientRetries < MAX_TRANSIENT_RETRIES) {
+              transientRetries++
+              const backoffMs = Math.min(30000, 2000 * 2 ** (transientRetries - 1))
+              logger.warn('agent', `${currentModel} transient error (key ${apiKeyId}); retry ${transientRetries}/${MAX_TRANSIENT_RETRIES} in ${backoffMs}ms`, {
+                error: (e?.message || '').substring(0, 200),
+                status: e?.status || e?.statusCode,
+              })
+              onTransientRetry?.({ attempt: transientRetries, maxAttempts: MAX_TRANSIENT_RETRIES, backoffMs, model: currentModel })
+              await abortableSleep(backoffMs, abortController)
+              continue
+            }
+            logger.warn('agent', `${currentModel} transient retries exhausted for API key ${apiKeyId}, rotating key`)
+            break
+          }
 
-        onDone(fullText)
-        return
-
-      } catch (e: any) {
-        if (abortController?.signal.aborted) {
-          logger.info('agent', 'aborted by user')
-          onDone(fullText)
-          return
-        }
-
-        if (isRateLimitError(e)) {
-          logger.warn('agent', `${currentModel} hit rate limit for API key ${apiKeyId}, rotating`, {
+          // Non-retryable (400 invalid argument, 404 not found, etc.) → next model.
+          logger.warn('agent', `${currentModel} encountered non-retryable error, trying next model`, {
+            error: (e?.message || '').substring(0, 200),
             status: e?.status || e?.statusCode,
-            message: (e?.message || '').substring(0, 200),
           })
-          try { markModelExhausted(currentModel, apiKeyId) } catch (err) { logger.error('agent', 'failed to mark model as exhausted', err) }
-          continue
+          nextModel = true
+          break
         }
-
-        logger.warn('agent', `${currentModel} encountered error, trying next model`, {
-          error: (e?.message || '').substring(0, 200),
-          status: e?.status || e?.statusCode,
-        })
-        break
       }
+
+      if (nextModel) break
     }
 
     logger.info('agent', `model ${currentModel} failed, trying next model`)

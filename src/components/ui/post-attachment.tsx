@@ -392,7 +392,7 @@ function getTweetCardPreview(raw: any): { url?: string; title?: string; descript
   return { url, title, description, image }
 }
 
-// ponytail: rdt-cli returns raw Reddit API data. Cover common Reddit media shapes:
+// ponytail: Reddit connector returns raw Reddit API data. Cover common Reddit media shapes:
 // native video, gallery media_metadata, direct image/video URLs, preview image, thumbnail.
 export function extractRedditMedia(raw: any): PostAttachment[] {
   const source = raw?.crosspost_parent_list?.[0] || raw

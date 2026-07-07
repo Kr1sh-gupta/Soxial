@@ -39,7 +39,7 @@ Soxial is a desktop application that acts as a personal social media manager for
 
 **The 5-minute onboarding is the core of it.** You answer a few questions about who you are and what you want. The AI then:
 
-- Connects to your X and Reddit accounts (via cookie-based CLI tools — no API approvals, no rate-limit walls)
+- Connects to your X and Reddit accounts (direct, cookie-based access — no API approvals, no rate-limit walls)
 - Pulls your posts, replies, engagement metrics, who you follow, what you like
 - Analyzes your actual writing voice — vocabulary, sentence structure, humor, quirks
 - Asks you 4-8 targeted questions about gaps it can't infer (risk tolerance, time budget, what you want to be known for)
@@ -70,7 +70,7 @@ I'll be direct about the reasoning, because I think the "why" matters more than 
 
 - **A dedicated agent loop** — the app has its own Gemini-powered agent with streaming responses, tool calls, and thinking. It doesn't piggyback on Claude or Cursor. It runs the show.
 - **Persistent SQLite, not markdown** — profile, memory, hooks, pillars, targets, voice rules, social content archive. Structured, queryable, survives restarts.
-- **CLI integration, not browser scraping** — I use `twitter-cli` and `rdt-cli` for fast, JSON-structured platform access. Cookie-based auth means no API approval gauntlets, no rate-limit walls on day one.
+- **Direct platform access, not browser scraping** — fast, JSON-structured access to X and Reddit through Soxial's own platform connectors. Cookie-based auth means no API approval gauntlets, no rate-limit walls on day one.
 - **Rich content rendering** — when the agent shows you a tweet, it renders an actual tweet card with live data. When it proposes a reply, you see the original post and your reply side by side. This isn't a text dump; it's a working interface.
 
 **But here's the actual answer to "why this one":**
@@ -146,7 +146,7 @@ soxial/
 │   ├── agent-system-prompt.ts      # Main chat agent system prompt
 │   ├── onboarding-system-prompt.ts # Onboarding agent system prompt (6-phase strategy build)
 │   ├── tools.ts                    # 60+ tool definitions (X, Reddit, strategy, memory, image gen)
-│   ├── cli.ts                      # twitter-cli / rdt-cli wrapper (uv-installed, cookie auth)
+│   ├── cli.ts                      # X / Reddit platform connector wrapper (cookie auth)
 │   ├── db.ts                       # SQLite schema + queries (better-sqlite3, WAL mode)
 │   ├── puter.ts                    # Image generation: Gemini primary, Puter.js fallback
 │   └── social-content.ts           # Auto-archive of fetched posts/replies/comments
