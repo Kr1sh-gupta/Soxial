@@ -1,7 +1,7 @@
 {
   "name": "soxial",
   "productName": "Soxial",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "description": "Soxial is an AI-powered social media manager for X and Reddit.",
   "main": "./out/main/index.js",
   "author": "Hossain Jahed <rabden@users.noreply.github.com>",
@@ -49,6 +49,7 @@
     "tailwind-merge": "^3.6.0",
     "tailwindcss-animate": "^1.0.7",
     "use-stick-to-bottom": "^1.1.6",
+    "zhipu-ai-provider": "^0.3.1",
     "zod": "^3.25.0",
     "zod-to-json-schema": "^3.25.2"
   },
