@@ -12,6 +12,10 @@ const MODEL_DISPLAY: Record<string, string> = {
   "gemini-3.5-flash": "Gemini 3.5 Flash",
   "gemini-3.1-pro": "Gemini 3.1 Pro",
   "gemini-3.1-flash-lite": "Gemini 3.1 Flash Lite",
+  "glm-5.2": "GLM 5.2",
+  "glm-5-turbo": "GLM 5 Turbo",
+  "glm-4.7-flash": "GLM 4.7 Flash",
+  "glm-4.5-flash": "GLM 4.5 Flash",
 };
 const modelLabel = (id: string) => MODEL_DISPLAY[id] || id;
 
@@ -51,12 +55,26 @@ function MorphingText({ text }: { text: string }) {
   );
 }
 
-function GlmIcon({ className }: { className?: string }) {
+function GoogleIcon({ className }: { className?: string }) {
   return (
-    <svg viewBox="0 0 24 24" className={className} fill="currentColor">
-      <path d="M12 2L2 7v10l10 5 10-5V7L12 2zm0 2.3L19.5 8 12 11.7 4.5 8 12 4.3zM4 9.5l7 3.5v7L4 16.5v-7zm9 10.5v-7l7-3.5v7l-7 3.5z" />
+    <svg viewBox="0 0 24 24" className={className} fill="none">
+      <path d="M12 2L2 7v10l10 5 10-5V7L12 2zm0 2.3L19.5 8 12 11.7 4.5 8 12 4.3zM4 9.5l7 3.5v7L4 16.5v-7zm9 10.5v-7l7-3.5v7l-7 3.5z" fill="currentColor" />
     </svg>
   );
+}
+
+function ZaiIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" className={className} fill="currentColor">
+      <path d="M5 4h14v3l-9 9h9v4H5v-3l9-9H5V4z" />
+    </svg>
+  );
+}
+
+function ProviderIcon({ model, className }: { model: string; className?: string }) {
+  return model.startsWith("glm")
+    ? <ZaiIcon className={className} />
+    : <GoogleIcon className={className} />;
 }
 
 function ArrowUpIcon() {
@@ -148,6 +166,7 @@ export interface PromptInputProps {
   placeholder?: string;
   className?: string;
   models?: string[];
+  model?: string;
   efforts?: string[];
   modelSupportsEffort?: (model: string) => boolean;
   disabled?: boolean;
@@ -173,6 +192,7 @@ export const PromptInput = React.forwardRef<HTMLDivElement, PromptInputProps>(
     placeholder = "Ask anything",
     className,
     models = ["Gemini 3.1 Flash Lite"],
+    model: controlledModel,
     efforts = ["Low", "Medium", "High"],
     modelSupportsEffort = () => true,
     disabled = false,
@@ -199,6 +219,13 @@ export const PromptInput = React.forwardRef<HTMLDivElement, PromptInputProps>(
         onModelChange?.(models[0]);
       }
     }, [models]);
+
+    // Sync with controlled model prop (e.g. when agent falls back to a different model)
+    useEffect(() => {
+      if (controlledModel && controlledModel !== selectedModel) {
+        setSelectedModel(controlledModel);
+      }
+    }, [controlledModel]);
     const [effortIndex, setEffortIndex] = useState(1);
     const [modelOpen, setModelOpen] = useState(false);
     const [attachments, setAttachments] = useState<Attachment[]>([]);
@@ -247,10 +274,13 @@ export const PromptInput = React.forwardRef<HTMLDivElement, PromptInputProps>(
         : typeof qAnswer === "string" && qAnswer.trim() !== ""
       : false;
 
+    // All prompt-input children use absolute positioning, so the container needs
+    // an explicit height. Calculate based on content, capped at 80vh.
+    const maxQH = typeof window !== "undefined" ? window.innerHeight * 0.8 : 600;
     const effectiveContainerH = question
       ? question.type === "text"
-        ? Math.max(180, taH + 140)
-        : Math.max(180, 124 + (question.options?.length || 0) * 52)
+        ? Math.min(maxQH, Math.max(180, taH + 140))
+        : Math.min(maxQH, Math.max(180, 140 + (question.options?.length || 0) * 52))
       : containerH;
 
     const toggleMulti = (opt: string) => {
@@ -349,8 +379,7 @@ export const PromptInput = React.forwardRef<HTMLDivElement, PromptInputProps>(
       if (
         value.trim() === "" &&
         attachments.length === 0 &&
-        queue.length === 0 &&
-        !isStreaming
+        queue.length === 0
       ) {
         setIsSmooth(false);
         setExpanded(false);
@@ -580,6 +609,7 @@ export const PromptInput = React.forwardRef<HTMLDivElement, PromptInputProps>(
           style={{
             borderRadius: 24,
             height: question ? effectiveContainerH : expanded ? containerH : 48,
+            maxHeight: question ? "80vh" : undefined,
             transition: isSmooth ? SMOOTH : SPRING,
             overflow: question ? "hidden" : expanded ? "visible" : "hidden",
           }}
@@ -834,7 +864,7 @@ export const PromptInput = React.forwardRef<HTMLDivElement, PromptInputProps>(
                   modelOpen && "bg-accent/60 text-foreground",
                 )}
               >
-                <GlmIcon className="size-3.5 opacity-70 group-hover:opacity-100" />
+                <ProviderIcon model={selectedModel} className="size-3.5 opacity-70 group-hover:opacity-100" />
                 <span className="text-xs font-semibold">
                   <MorphingText text={modelLabel(selectedModel)} />
                 </span>
@@ -887,7 +917,7 @@ export const PromptInput = React.forwardRef<HTMLDivElement, PromptInputProps>(
                       disabled={isModelExhausted}
                     >
                       <span className="flex items-center gap-2">
-                        <GlmIcon className="size-3.5 opacity-85 group-hover:opacity-100" />
+                        <ProviderIcon model={model} className="size-3.5 opacity-85 group-hover:opacity-100" />
                         {modelLabel(model)}
                       </span>
                       {isModelExhausted && hoursRemaining != null && hoursRemaining > 0 && (

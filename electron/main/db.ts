@@ -316,18 +316,33 @@ function initSchema(db: Database.Database) {
     db.exec('ALTER TABLE chat_sessions ADD COLUMN steps_user_count INTEGER DEFAULT 0')
   }
 
-  // Migration: sync primary API key from user_profile to api_keys table
-  // so it participates in uniform rotation, tier detection, and exhaustion tracking.
-  const existingProfile = db.prepare('SELECT gemini_api_key FROM user_profile WHERE id = 1').get() as any
-  if (existingProfile?.gemini_api_key) {
-    const exists = db.prepare('SELECT id FROM api_keys WHERE api_key = ? AND is_active = 1')
-      .get(existingProfile.gemini_api_key) as any
-    if (!exists) {
-      db.prepare("INSERT INTO api_keys (name, api_key, provider) VALUES ('Primary', ?, 'google')")
-        .run(existingProfile.gemini_api_key)
-      logger.info('db', 'synced primary API key to api_keys table')
-    }
+  // Migration: add zai_coding_plan column to user_profile table if missing
+  if (!profileCols.some((c: any) => c.name === 'zai_coding_plan')) {
+    db.exec('ALTER TABLE user_profile ADD COLUMN zai_coding_plan INTEGER DEFAULT 0')
   }
+
+  // Migration: add selected_model column to user_profile table if missing
+  if (!profileCols.some((c: any) => c.name === 'selected_model')) {
+    db.exec('ALTER TABLE user_profile ADD COLUMN selected_model TEXT')
+  }
+
+  // Migration: sync primary API keys from user_profile to api_keys table
+  // so they participate in uniform rotation, tier detection, and exhaustion tracking.
+  // Uses syncPrimaryKeyToApiKeys which updates the existing 'Primary' row in-place
+  // when the key changes (avoids duplicate active rows + stale tier labels).
+  const profileKeys = db.prepare('SELECT gemini_api_key, zai_api_key FROM user_profile WHERE id = 1').get() as any
+  if (profileKeys?.gemini_api_key) syncPrimaryKeyToApiKeys(profileKeys.gemini_api_key, 'google')
+  if (profileKeys?.zai_api_key) syncPrimaryKeyToApiKeys(profileKeys.zai_api_key, 'zhipu')
+
+  // Dedup: if any stale duplicate 'Primary' rows survived from the old insert-only
+  // logic, keep only the newest one per provider and deactivate the rest.
+  db.exec(`
+    UPDATE api_keys SET is_active = 0
+    WHERE name = 'Primary' AND is_active = 1
+    AND id NOT IN (
+      SELECT MAX(id) FROM api_keys WHERE name = 'Primary' AND is_active = 1 GROUP BY provider
+    )
+  `)
 }
 
 export function getChatSessionSteps(sessionId: number): { steps: any[]; userCount: number } | null {
@@ -349,14 +364,26 @@ export function getProfile() {
   return getDb().prepare('SELECT * FROM user_profile WHERE id = 1').get() as any
 }
 
-export function syncPrimaryKeyToApiKeys(apiKey: string): void {
+export function syncPrimaryKeyToApiKeys(apiKey: string, provider: 'google' | 'zhipu' = 'google'): void {
   const db = getDb()
-  const existing = db.prepare('SELECT id FROM api_keys WHERE api_key = ? AND is_active = 1').get(apiKey) as any
+
+  // If the exact key already exists and is active, just rename it to Primary
+  const existing = db.prepare('SELECT id FROM api_keys WHERE api_key = ? AND provider = ? AND is_active = 1').get(apiKey, provider) as any
   if (existing) {
     db.prepare("UPDATE api_keys SET name = 'Primary' WHERE id = ?").run(existing.id)
     return
   }
-  db.prepare("INSERT INTO api_keys (name, api_key, provider) VALUES ('Primary', ?, 'google')").run(apiKey)
+
+  // Key changed: update the existing 'Primary' row for this provider in-place
+  // (avoids duplicate active rows; resets tier since the new key may differ in capability)
+  const currentPrimary = db.prepare("SELECT id FROM api_keys WHERE name = 'Primary' AND provider = ? AND is_active = 1").get(provider) as any
+  if (currentPrimary) {
+    db.prepare("UPDATE api_keys SET api_key = ?, tier = 'unknown' WHERE id = ?").run(apiKey, currentPrimary.id)
+    return
+  }
+
+  // No existing primary at all: insert new
+  db.prepare("INSERT INTO api_keys (name, api_key, provider) VALUES ('Primary', ?, ?)").run(apiKey, provider)
 }
 
 export function updateProfile(data: Record<string, any>) {
@@ -371,7 +398,10 @@ export function updateProfile(data: Record<string, any>) {
     db.prepare(`UPDATE user_profile SET ${sets} WHERE id = 1`).run(data)
   }
   if (data.gemini_api_key) {
-    syncPrimaryKeyToApiKeys(data.gemini_api_key)
+    syncPrimaryKeyToApiKeys(data.gemini_api_key, 'google')
+  }
+  if (data.zai_api_key) {
+    syncPrimaryKeyToApiKeys(data.zai_api_key, 'zhipu')
   }
   return getProfile()
 }
@@ -611,23 +641,53 @@ export function setApiTier(tier: 'free' | 'pro') {
 
 export function getAvailableModels(tier?: string): string[] {
   const db = getDb()
-  
-  // Check if we have any pro tier keys
-  const proKeys = db.prepare('SELECT COUNT(*) as count FROM api_keys WHERE tier = \'pro\' AND is_active = 1 AND provider = \'google\'').get() as any
-  const hasProKeys = proKeys.count > 0
-  
-  // Only include pro models if we have actual pro-tier keys detected
-  // Don't assume primary key might be pro - we should have detected its tier during tier detection
-  if (hasProKeys) {
-    return ['gemini-3.5-flash', 'gemini-3.1-pro', 'gemini-3.1-flash-lite']
-  } else {
-    return ['gemini-3.1-flash-lite', 'gemini-3.5-flash']
+  const models: string[] = []
+  const profile = getProfile()
+
+  // 1. Evaluate Google models
+  const googleKeys = db.prepare('SELECT COUNT(*) as count FROM api_keys WHERE provider = \'google\' AND is_active = 1').get() as any
+  if (googleKeys.count > 0) {
+    const proGoogleKeys = db.prepare('SELECT COUNT(*) as count FROM api_keys WHERE provider = \'google\' AND tier = \'pro\' AND is_active = 1').get() as any
+    if (proGoogleKeys.count > 0) {
+      models.push('gemini-3.5-flash', 'gemini-3.1-pro', 'gemini-3.1-flash-lite')
+    } else {
+      models.push('gemini-3.1-flash-lite', 'gemini-3.5-flash')
+    }
   }
+
+  // 2. Evaluate Z.AI (Zhipu) models
+  const zhipuKeys = db.prepare('SELECT COUNT(*) as count FROM api_keys WHERE provider = \'zhipu\' AND is_active = 1').get() as any
+  if (zhipuKeys.count > 0) {
+    if (profile?.zai_coding_plan) {
+      // Coding plan: always pro tier, only supports glm-5.2 + glm-5-turbo (no flash models)
+      models.push('glm-5.2', 'glm-5-turbo')
+    } else {
+      const proZhipuKeys = db.prepare('SELECT COUNT(*) as count FROM api_keys WHERE provider = \'zhipu\' AND tier = \'pro\' AND is_active = 1').get() as any
+      if (proZhipuKeys.count > 0) {
+        models.push('glm-5.2', 'glm-5-turbo', 'glm-4.7-flash', 'glm-4.5-flash')
+      } else {
+        models.push('glm-4.7-flash', 'glm-4.5-flash')
+      }
+    }
+  }
+
+  return models
 }
 
 export function getDefaultModel(tier?: string): string {
-  const actualTier = tier || getApiTier().tier
-  return actualTier === 'pro' ? 'gemini-3.5-flash' : 'gemini-3.1-flash-lite'
+  const models = getAvailableModels(tier)
+  if (models.includes('gemini-3.5-flash')) return 'gemini-3.5-flash'
+  if (models.includes('glm-4.7-flash')) return 'glm-4.7-flash'
+  return models[0] || 'gemini-3.1-flash-lite'
+}
+
+export function getSelectedModel(): string | null {
+  const row = getDb().prepare('SELECT selected_model FROM user_profile WHERE id = 1').get() as any
+  return row?.selected_model || null
+}
+
+export function setSelectedModel(model: string): void {
+  getDb().prepare('UPDATE user_profile SET selected_model = ? WHERE id = 1').run(model)
 }
 
 // ─── API Key Management ───────────────────────────────────────────
@@ -639,14 +699,14 @@ export function getApiKeys(provider: string = 'google'): Array<{ id: number; nam
 
 export function addApiKey(apiKey: string, provider: string = 'google'): number {
   const db = getDb()
-  const name = nextKeyName(db)
+  const name = nextKeyName(db, provider)
   const result = db.prepare('INSERT INTO api_keys (name, api_key, provider) VALUES (?, ?, ?)').run(name, apiKey, provider)
   return result.lastInsertRowid as number
 }
 
-// Auto-name nameless keys as "Key N" (N = max existing numeric suffix + 1).
-function nextKeyName(db: Database.Database): string {
-  const rows = db.prepare("SELECT name FROM api_keys WHERE name LIKE 'Key %'").all() as { name: string }[]
+// Auto-name nameless keys as "Key N" (N = max existing numeric suffix + 1), scoped per provider.
+function nextKeyName(db: Database.Database, provider: string = 'google'): string {
+  const rows = db.prepare("SELECT name FROM api_keys WHERE provider = ? AND name LIKE 'Key %'").all(provider) as { name: string }[]
   let max = 0
   for (const r of rows) {
     const m = /^Key (\d+)$/.exec(r.name || '')
@@ -678,12 +738,12 @@ export function getApiKeysByTier(tier: 'free' | 'pro', provider: string = 'googl
 export function getAvailableApiKeyForModel(model: string, requiredTier?: 'free' | 'pro', excludeApiKeyIds?: number[]): { id: number; api_key: string } | null {
   const db = getDb()
   const now = new Date().toISOString()
+  const provider = model.startsWith('glm') ? 'zhipu' : 'google'
 
   // Determine required tier based on model
   let tierFilter: string | null | undefined = requiredTier
   if (!tierFilter) {
-    // gemini-3.1-pro requires pro tier, others work with free tier
-    tierFilter = model === 'gemini-3.1-pro' ? 'pro' : null
+    tierFilter = (model === 'gemini-3.1-pro' || model === 'glm-5.2' || model === 'glm-5-turbo') ? 'pro' : null
   }
 
   // Build query with optional tier filter
@@ -691,7 +751,7 @@ export function getAvailableApiKeyForModel(model: string, requiredTier?: 'free' 
     SELECT id, api_key
     FROM api_keys
     WHERE is_active = 1
-    AND provider = 'google'
+    AND provider = ?
     AND id NOT IN (
       SELECT api_key_id
       FROM model_exhaustion
@@ -700,7 +760,7 @@ export function getAvailableApiKeyForModel(model: string, requiredTier?: 'free' 
       AND api_key_id IS NOT NULL
     )
   `
-  const params: any[] = [model, now]
+  const params: any[] = [provider, model, now]
 
   if (tierFilter) {
     query += ' AND tier = ?'
@@ -718,7 +778,7 @@ export function getAvailableApiKeyForModel(model: string, requiredTier?: 'free' 
 
   const availableKeys = db.prepare(query).all(...params) as any[]
 
-  logger.info('db', `getAvailableApiKeyForModel for ${model}: found ${availableKeys.length} keys (exclude: ${JSON.stringify(triedIds)}, tier: ${tierFilter})`)
+  logger.info('db', `getAvailableApiKeyForModel for ${model} (provider ${provider}): found ${availableKeys.length} keys (exclude: ${JSON.stringify(triedIds)}, tier: ${tierFilter})`)
 
   if (availableKeys.length === 0) {
     return null
@@ -744,16 +804,17 @@ export function markModelExhausted(model: string, apiKeyId: number | null): void
 export function isModelExhaustedForAllKeys(model: string, requiredTier?: 'free' | 'pro'): boolean {
   const db = getDb()
   const now = new Date().toISOString()
+  const provider = model.startsWith('glm') ? 'zhipu' : 'google'
   
   // Determine required tier based on model
   let tierFilter: string | null | undefined = requiredTier
   if (!tierFilter) {
-    tierFilter = model === 'gemini-3.1-pro' ? 'pro' : null
+    tierFilter = (model === 'gemini-3.1-pro' || model === 'glm-5.2' || model === 'glm-5-turbo') ? 'pro' : null
   }
   
-  // If tier is specified, only check keys of that tier
+  // If tier is specified, only check keys of that tier for the relevant provider
   if (tierFilter) {
-    const tierKeys = db.prepare('SELECT COUNT(*) as count FROM api_keys WHERE is_active = 1 AND provider = \'google\' AND tier = ?').get(tierFilter) as any
+    const tierKeys = db.prepare('SELECT COUNT(*) as count FROM api_keys WHERE is_active = 1 AND provider = ? AND tier = ?').get(provider, tierFilter) as any
     if (tierKeys.count === 0) return false
     
     const exhaustedTierKeys = db.prepare(`
@@ -762,15 +823,15 @@ export function isModelExhaustedForAllKeys(model: string, requiredTier?: 'free' 
       WHERE model = ? 
       AND available_at > ?
       AND api_key_id IS NOT NULL
-      AND api_key_id IN (SELECT id FROM api_keys WHERE tier = ? AND is_active = 1)
-    `).get(model, now, tierFilter) as any
+      AND api_key_id IN (SELECT id FROM api_keys WHERE tier = ? AND provider = ? AND is_active = 1)
+    `).get(model, now, tierFilter, provider) as any
     
     return exhaustedTierKeys.count >= tierKeys.count
   }
   
   // Non-tier path: the primary key is synced into api_keys (see syncPrimaryKeyToApiKeys
   // + the startup migration), so activeKeysCount already includes it — don't add it again.
-  const activeKeysCount = db.prepare('SELECT COUNT(*) as count FROM api_keys WHERE is_active = 1 AND provider = \'google\'').get() as any
+  const activeKeysCount = db.prepare('SELECT COUNT(*) as count FROM api_keys WHERE is_active = 1 AND provider = ?').get(provider) as any
   const totalKeys = activeKeysCount.count
   if (totalKeys === 0) return false
 

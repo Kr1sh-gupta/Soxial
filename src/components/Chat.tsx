@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { Message, MessageContent } from "src/components/ai-elements/message";
 import {
   ChainOfThoughtStep,
@@ -315,18 +315,37 @@ function MainScreen({
   );
 }
 
+interface SessionState {
+  messages: ChatMessage[];
+  streaming: boolean;
+  streamText: string;
+  steps: StepItem[];
+  stepCounter: number;
+  pendingQuestion: {
+    id: string;
+    text: string;
+    type: "single" | "multi" | "text";
+    options?: string[];
+  } | null;
+  transientRetry: { attempt: number; maxAttempts: number; backoffMs: number; model: string } | null;
+  status: "idle" | "running" | "completed-unread" | "question-unread" | "error-unread";
+}
+
 export default function Chat({ initialSessionId }: { initialSessionId?: number | null }) {
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [currentSessionId, setCurrentSessionId] = useState<number | null>(null);
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [streaming, setStreaming] = useState(false);
-  const [streamText, setStreamText] = useState("");
-  const streamTextRef = useRef("");
-  const [steps, setSteps] = useState<StepItem[]>([]);
-  const stepsRef = useRef<StepItem[]>([]);
-  const stepCounter = useRef(0);
+  const [sessionStates, setSessionStates] = useState<Record<number, SessionState>>({});
+
+  const streamTextRefs = useRef<Record<number, string>>({});
+  const stepsRefs = useRef<Record<number, StepItem[]>>({});
+
   const [sidebarOpen, setSidebarOpen] = useState(true);
-  const [selectedModel, setSelectedModel] = useState("Gemini 3.1 Flash Lite");
+  const [selectedModel, setSelectedModelState] = useState("gemini-3.1-flash-lite");
+
+  const setSelectedModel = useCallback((model: string) => {
+    setSelectedModelState(model);
+    window.api.setSelectedModel(model).catch(() => {});
+  }, []);
   const [selectedEffort, setSelectedEffort] = useState("Medium");
   const currentSessionIdRef = useRef<number | null>(null);
   const [inputEl, setInputEl] = useState<HTMLDivElement | null>(null);
@@ -339,16 +358,31 @@ export default function Chat({ initialSessionId }: { initialSessionId?: number |
   const [profile, setProfile] = useState<any>(null);
   const [scheduledCount, setScheduledCount] = useState(0);
   const [queuedMessages, setQueuedMessages] = useState<string[]>([]);
-  const [pendingQuestion, setPendingQuestion] = useState<{
-    id: string;
-    text: string;
-    type: "single" | "multi" | "text";
-    options?: string[];
-  } | null>(null);
   const [apiTier, setApiTier] = useState<{ tier: string } | null>(null);
   const [availableModels, setAvailableModels] = useState<string[]>([]);
   const [modelExhaustionStatus, setModelExhaustionStatus] = useState<Record<string, { exhausted: boolean; availableAt: string | null }>>({});
-  const [transientRetry, setTransientRetry] = useState<{ attempt: number; maxAttempts: number; backoffMs: number; model: string } | null>(null);
+
+  const getOrCreateSessionState = (sid: number, initialMsgs: ChatMessage[] = []): SessionState => {
+    if (sessionStates[sid]) return sessionStates[sid];
+    return {
+      messages: initialMsgs,
+      streaming: false,
+      streamText: "",
+      steps: [],
+      stepCounter: 0,
+      pendingQuestion: null,
+      transientRetry: null,
+      status: "idle",
+    };
+  };
+
+  const currentSessionState = currentSessionId !== null ? getOrCreateSessionState(currentSessionId) : null;
+  const messages = currentSessionState ? currentSessionState.messages : [];
+  const streaming = currentSessionState ? currentSessionState.streaming : false;
+  const streamText = currentSessionState ? currentSessionState.streamText : "";
+  const steps = currentSessionState ? currentSessionState.steps : [];
+  const pendingQuestion = currentSessionState ? currentSessionState.pendingQuestion : null;
+  const transientRetry = currentSessionState ? currentSessionState.transientRetry : null;
 
   function parseAttachments(raw: any): ChatAttachment[] | undefined {
     if (!raw) return undefined;
@@ -462,10 +496,13 @@ export default function Chat({ initialSessionId }: { initialSessionId?: number |
       const models = await window.api.getAvailableModels();
       setAvailableModels(models);
       
-      // Update selected model if current is not in available models
-      if (models.length > 0 && !models.includes(selectedModel)) {
+      // Load persisted model preference, fall back to default if not available
+      const persisted = await window.api.getSelectedModel();
+      if (persisted && models.includes(persisted)) {
+        setSelectedModelState(persisted);
+      } else if (models.length > 0 && !models.includes(selectedModel)) {
         const defaultModel = await window.api.getDefaultModel();
-        setSelectedModel(defaultModel);
+        setSelectedModelState(defaultModel);
       }
 
       // Load model exhaustion status for all models
@@ -577,14 +614,34 @@ export default function Chat({ initialSessionId }: { initialSessionId?: number |
       steps: parseSteps(m.reasoning, m.tool_calls_json),
       attachments: parseAttachments(m.attachments_json),
     }));
-    setMessages(parsed);
+    
+    setSessionStates((prev) => {
+      const current = prev[id] || {
+        messages: parsed,
+        streaming: false,
+        streamText: "",
+        steps: [],
+        stepCounter: 0,
+        pendingQuestion: null,
+        transientRetry: null,
+        status: "idle",
+      };
+      return {
+        ...prev,
+        [id]: {
+          ...current,
+          messages: parsed,
+          status: "idle", // we entered the chat, mark as read
+        },
+      };
+    });
+
     contextSummaryRef.current = await window.api.getSessionSummary(id);
   }
 
   async function newChat() {
     setView("chat");
     setCurrentSessionId(null);
-    setMessages([]);
     contextSummaryRef.current = null;
   }
 
@@ -594,75 +651,201 @@ export default function Chat({ initialSessionId }: { initialSessionId?: number |
     setSessions(remaining);
     if (currentSessionId === id) {
       setCurrentSessionId(null);
-      setMessages([]);
       contextSummaryRef.current = null;
     }
   }
 
   useEffect(() => {
-    window.api.onChatToolCall((data) => {
-      const tool: StepItem = {
-        type: "tool",
-        id: stepCounter.current++,
-        name: data.name,
-        args: data.args,
-        status: "calling",
-      };
-      stepsRef.current = [...stepsRef.current, tool];
-      setSteps(stepsRef.current);
-    });
-    window.api.onChatToolResult((data) => {
-      let found = false;
-      stepsRef.current = stepsRef.current.map((s) => {
-        if (
-          !found &&
-          s.type === "tool" &&
-          s.name === data.name &&
-          s.status === "calling"
-        ) {
-          found = true;
-          return { ...s, status: "complete", result: data.result };
-        }
-        return s;
+    window.api.onChatToolCall((data: { name: string; args: any; sessionId: number }) => {
+      const sid = data.sessionId;
+      setSessionStates((prev) => {
+        const state = prev[sid] || {
+          messages: [],
+          streaming: true,
+          streamText: "",
+          steps: [],
+          stepCounter: 0,
+          pendingQuestion: null,
+          transientRetry: null,
+          status: "running",
+        };
+        const nextSteps = [...state.steps];
+        const nextStepCounter = state.stepCounter + 1;
+        
+        const tool: StepItem = {
+          type: "tool",
+          id: state.stepCounter,
+          name: data.name,
+          args: data.args,
+          status: "calling",
+        };
+        nextSteps.push(tool);
+        stepsRefs.current[sid] = nextSteps;
+
+        return {
+          ...prev,
+          [sid]: {
+            ...state,
+            streaming: true,
+            status: "running",
+            stepCounter: nextStepCounter,
+            steps: nextSteps,
+          },
+        };
       });
-      setSteps([...stepsRef.current]);
     });
-    window.api.onChatReasoning((text) => {
-      const s = stepsRef.current;
-      const last = s[s.length - 1];
-      if (last && last.type === "reasoning") {
-        last.text += text;
-      } else {
-        s.push({ type: "reasoning", text });
-      }
-      setSteps([...s]);
+
+    window.api.onChatToolResult((data: { name: string; result: any; sessionId: number }) => {
+      const sid = data.sessionId;
+      setSessionStates((prev) => {
+        const state = prev[sid];
+        if (!state) return prev;
+        let found = false;
+        const nextSteps = state.steps.map((s) => {
+          if (
+            !found &&
+            s.type === "tool" &&
+            s.name === data.name &&
+            s.status === "calling"
+          ) {
+            found = true;
+            return { ...s, status: "complete" as const, result: data.result };
+          }
+          return s;
+        });
+        stepsRefs.current[sid] = nextSteps;
+
+        return {
+          ...prev,
+          [sid]: {
+            ...state,
+            steps: nextSteps,
+          },
+        };
+      });
     });
-    window.api.onChatError((error) => {
-      setStreaming(false);
-      setTransientRetry(null);
-      setMessages((prev) => [
-        ...prev,
-        { role: "assistant", content: `Error: ${error}` },
-      ]);
+
+    window.api.onChatReasoning((data: { text: string; sessionId: number }) => {
+      const sid = data.sessionId;
+      setSessionStates((prev) => {
+        const state = prev[sid] || {
+          messages: [],
+          streaming: true,
+          streamText: "",
+          steps: [],
+          stepCounter: 0,
+          pendingQuestion: null,
+          transientRetry: null,
+          status: "running",
+        };
+        const nextSteps = [...state.steps];
+        const lastIdx = nextSteps.length - 1;
+        const last = nextSteps[lastIdx];
+        if (last && last.type === "reasoning") {
+          nextSteps[lastIdx] = { ...last, text: last.text + data.text };
+        } else {
+          nextSteps.push({ type: "reasoning", text: data.text });
+        }
+        stepsRefs.current[sid] = nextSteps;
+
+        return {
+          ...prev,
+          [sid]: {
+            ...state,
+            streaming: true,
+            status: "running",
+            steps: nextSteps,
+          },
+        };
+      });
     });
-    window.api.onChatQuestion((q) => {
-      const step: StepItem = {
-        type: "question",
-        id: q.id,
-        text: q.text,
-        qtype: q.type,
-        options: q.options,
-        status: "asking",
-      };
-      stepsRef.current = [...stepsRef.current, step];
-      setSteps([...stepsRef.current]);
-      setPendingQuestion(q);
+
+    window.api.onChatError((data: { error: string; sessionId: number }) => {
+      const sid = data.sessionId;
+      setSessionStates((prev) => {
+        const state = prev[sid] || {
+          messages: [],
+          streaming: false,
+          streamText: "",
+          steps: [],
+          stepCounter: 0,
+          pendingQuestion: null,
+          transientRetry: null,
+          status: "idle",
+        };
+        const nextMessages: ChatMessage[] = [
+          ...state.messages,
+          { role: "assistant" as const, content: `Error: ${data.error}` },
+        ];
+        return {
+          ...prev,
+          [sid]: {
+            ...state,
+            streaming: false,
+            transientRetry: null,
+            messages: nextMessages,
+            status: currentSessionIdRef.current === sid ? "idle" : "error-unread",
+          },
+        };
+      });
     });
-    window.api.onChatTransientRetry((info) => {
-      setTransientRetry(info);
+
+    window.api.onChatQuestion((q: { id: string; text: string; type: "single" | "multi" | "text"; options?: string[]; sessionId: number }) => {
+      const sid = q.sessionId;
+      setSessionStates((prev) => {
+        const state = prev[sid] || {
+          messages: [],
+          streaming: true,
+          streamText: "",
+          steps: [],
+          stepCounter: 0,
+          pendingQuestion: null,
+          transientRetry: null,
+          status: "running",
+        };
+        const nextSteps = [...state.steps];
+        const step: StepItem = {
+          type: "question",
+          id: q.id,
+          text: q.text,
+          qtype: q.type,
+          options: q.options,
+          status: "asking",
+        };
+        nextSteps.push(step);
+        stepsRefs.current[sid] = nextSteps;
+
+        return {
+          ...prev,
+          [sid]: {
+            ...state,
+            streaming: true, // make sure we keep streaming true if background
+            steps: nextSteps,
+            pendingQuestion: q,
+            status: currentSessionIdRef.current === sid ? "running" : "question-unread",
+          },
+        };
+      });
     });
-    window.api.onChatInjected((injected: any[]) => {
-      const injectedContents = injected
+
+    window.api.onChatTransientRetry((info: { attempt: number; maxAttempts: number; backoffMs: number; model: string; sessionId: number }) => {
+      const sid = info.sessionId;
+      setSessionStates((prev) => {
+        const state = prev[sid];
+        if (!state) return prev;
+        return {
+          ...prev,
+          [sid]: {
+            ...state,
+            transientRetry: info,
+          },
+        };
+      });
+    });
+
+    window.api.onChatInjected((data: { messages: any[]; sessionId: number }) => {
+      const sid = data.sessionId;
+      const injectedContents = data.messages
         .filter((m) => m.role === "user" && (m.content?.trim() || m.parts?.length))
         .map((m: any) => {
           const attachments = partsToAttachments(m.parts) || [];
@@ -679,8 +862,9 @@ export default function Chat({ initialSessionId }: { initialSessionId?: number |
         });
       if (injectedContents.length === 0) return;
 
-      const assistantContent = streamTextRef.current;
-      const assistantSteps = stepsRef.current;
+      // Compute values OUTSIDE the updater — StrictMode invokes updaters twice
+      const assistantContent = streamTextRefs.current[sid] || "";
+      const assistantSteps = stepsRefs.current[sid] || [];
       const assistantMsg =
         assistantContent.trim() || assistantSteps.length > 0
           ? {
@@ -689,19 +873,36 @@ export default function Chat({ initialSessionId }: { initialSessionId?: number |
               steps: assistantSteps.length > 0 ? assistantSteps : undefined,
             }
           : null;
-      const userMsgs = injectedContents.map(({ content, attachments }) => ({
-        role: "user" as const,
-        content,
-        attachments: attachments.length > 0 ? attachments : undefined,
-      }));
 
-      setMessages((prev) => [
-        ...prev,
-        ...(assistantMsg ? [assistantMsg] : []),
-        ...userMsgs,
-      ]);
-      setQueuedMessages((prev) => {
-        const next = [...prev];
+      // Side effects outside updater (prevents double DB inserts in StrictMode)
+      void (async () => {
+        if (assistantMsg) {
+          const stepsJson = assistantMsg.steps
+            ? JSON.stringify(assistantMsg.steps)
+            : undefined;
+          await window.api.addMessage(
+            sid,
+            "assistant",
+            assistantMsg.content,
+            stepsJson,
+          );
+        }
+        for (const injected of injectedContents) {
+          await window.api.addMessage(
+            sid,
+            "user",
+            injected.content,
+            undefined,
+            undefined,
+            injected?.attachments?.length
+              ? JSON.stringify(injected.attachments)
+              : undefined,
+          );
+        }
+      })();
+
+      setQueuedMessages((qPrev) => {
+        const next = [...qPrev];
         for (const { label } of injectedContents) {
           const idx = next.indexOf(label);
           if (idx !== -1) next.splice(idx, 1);
@@ -709,40 +910,44 @@ export default function Chat({ initialSessionId }: { initialSessionId?: number |
         return next;
       });
 
-      const sessionId = currentSessionIdRef.current;
-      if (sessionId) {
-        void (async () => {
-          if (assistantMsg) {
-            const stepsJson = assistantMsg.steps
-              ? JSON.stringify(assistantMsg.steps)
-              : undefined;
-            await window.api.addMessage(
-              sessionId,
-              "assistant",
-              assistantMsg.content,
-              stepsJson,
-            );
-          }
-          for (const injected of injectedContents) {
-            await window.api.addMessage(
-              sessionId,
-              "user",
-              injected.content,
-              undefined,
-              undefined,
-              injected?.attachments?.length
-                ? JSON.stringify(injected.attachments)
-                : undefined,
-            );
-          }
-        })();
-      }
+      streamTextRefs.current[sid] = "";
+      stepsRefs.current[sid] = [];
 
-      streamTextRef.current = "";
-      setStreamText("");
-      stepsRef.current = [];
-      setSteps([]);
+      setSessionStates((prev) => {
+        const state = prev[sid];
+        if (!state) return prev;
+
+        const userMsgs = injectedContents.map(({ content, attachments }) => ({
+          role: "user" as const,
+          content,
+          attachments: attachments.length > 0 ? attachments : undefined,
+        }));
+
+        const nextMessages = [
+          ...state.messages,
+          ...(assistantMsg ? [assistantMsg] : []),
+          ...userMsgs,
+        ];
+
+        return {
+          ...prev,
+          [sid]: {
+            ...state,
+            messages: nextMessages,
+            streamText: "",
+            steps: [],
+          },
+        };
+      });
     });
+
+    window.api.onChatModelSwitch((data: { model: string; sessionId: number }) => {
+      if (data.sessionId === currentSessionIdRef.current) {
+        setSelectedModelState(data.model);
+        window.api.setSelectedModel(data.model).catch(() => {});
+      }
+    });
+
     return () => {
       window.api.removeAllListeners("chat:toolCall");
       window.api.removeAllListeners("chat:toolResult");
@@ -751,19 +956,35 @@ export default function Chat({ initialSessionId }: { initialSessionId?: number |
       window.api.removeAllListeners("chat:question");
       window.api.removeAllListeners("chat:transientRetry");
       window.api.removeAllListeners("chat:injected");
+      window.api.removeAllListeners("chat:modelSwitch");
     };
   }, []);
 
   const handleAnswer = (answer: string | string[]) => {
     if (!pendingQuestion) return;
-    stepsRef.current = stepsRef.current.map((s) =>
-      s.type === "question" && s.id === pendingQuestion.id
-        ? { ...s, status: "answered" as const, answer }
-        : s,
-    );
-    setSteps([...stepsRef.current]);
+    const sid = currentSessionId;
+    if (sid === null) return;
+
+    setSessionStates((prev) => {
+      const state = prev[sid];
+      if (!state) return prev;
+      const nextSteps = state.steps.map((s) =>
+        s.type === "question" && s.id === pendingQuestion.id
+          ? { ...s, status: "answered" as const, answer }
+          : s
+      );
+      stepsRefs.current[sid] = nextSteps;
+      return {
+        ...prev,
+        [sid]: {
+          ...state,
+          steps: nextSteps,
+          pendingQuestion: null,
+        },
+      };
+    });
+
     window.api.sendChatAnswer(pendingQuestion.id, answer);
-    setPendingQuestion(null);
   };
 
   const handleCardAction = (type: string, data: any) => {
@@ -793,6 +1014,7 @@ export default function Chat({ initialSessionId }: { initialSessionId?: number |
         : "");
     if (streaming) {
       setQueuedMessages((prev) => [...prev, queuedLabel]);
+      const sid = currentSessionId;
       window.api
         .chatInject(
           preparedAttachments.length > 0
@@ -805,22 +1027,35 @@ export default function Chat({ initialSessionId }: { initialSessionId?: number |
                 })),
               }
             : content,
+          sid ?? undefined
         )
         .then((r: any) => {
-        if (r?.success) return;
-        setQueuedMessages((prev) => {
-          const next = [...prev];
-          const idx = next.indexOf(queuedLabel);
-          if (idx !== -1) next.splice(idx, 1);
-          return next;
-        });
-        setMessages((prev) => [
-          ...prev,
-          {
-            role: "assistant",
-            content: `Error: Could not inject message into the active run${r?.error ? ` (${r.error})` : ""}.`,
-          },
-        ]);
+          if (r?.success) return;
+          setQueuedMessages((prev) => {
+            const next = [...prev];
+            const idx = next.indexOf(queuedLabel);
+            if (idx !== -1) next.splice(idx, 1);
+            return next;
+          });
+          if (sid !== null) {
+            setSessionStates((prev) => {
+              const state = prev[sid];
+              if (!state) return prev;
+              return {
+                ...prev,
+                [sid]: {
+                  ...state,
+                  messages: [
+                    ...state.messages,
+                    {
+                      role: "assistant",
+                      content: `Error: Could not inject message into the active run${r?.error ? ` (${r.error})` : ""}.`,
+                    },
+                  ],
+                },
+              };
+            });
+          }
         });
       return;
     }
@@ -837,24 +1072,24 @@ export default function Chat({ initialSessionId }: { initialSessionId?: number |
       setSessions(await window.api.getSessions());
     }
 
-    streamTextRef.current = "";
-    stepCounter.current = 0;
-    setStreaming(true);
-    setStreamText("");
-    setTransientRetry(null);
-    stepsRef.current = [];
-    setSteps([]);
+    const sid = sessionId;
 
-    const userMsg: ChatMessage = {
-      role: "user",
-      content,
-      attachments: preparedAttachments.length > 0 ? preparedAttachments : undefined,
-    };
-    const newMessages = [...messages, userMsg];
-    setMessages(newMessages);
+    setSessionStates((prev) => ({
+      ...prev,
+      [sid]: {
+        messages: [...(prev[sid]?.messages || []), { role: "user", content, attachments: preparedAttachments.length > 0 ? preparedAttachments : undefined }],
+        streaming: true,
+        streamText: "",
+        steps: [],
+        stepCounter: 0,
+        pendingQuestion: null,
+        transientRetry: null,
+        status: "running",
+      },
+    }));
 
     await window.api.addMessage(
-      sessionId,
+      sid,
       "user",
       content,
       undefined,
@@ -863,8 +1098,14 @@ export default function Chat({ initialSessionId }: { initialSessionId?: number |
     );
 
     const summary = contextSummaryRef.current;
-    const fullApiMessages = buildApiMessages(newMessages);
-    const textOnlyMessages = newMessages.map((m) => ({
+    
+    // Build API messages from the updated state messages
+    const currentMsgs = [
+      ...(sessionStates[sid]?.messages || []),
+      { role: "user" as const, content, attachments: preparedAttachments.length > 0 ? preparedAttachments : undefined }
+    ];
+    const fullApiMessages = buildApiMessages(currentMsgs);
+    const textOnlyMessages = currentMsgs.map((m) => ({
       role: m.role,
       content: m.content,
     }));
@@ -881,88 +1122,142 @@ export default function Chat({ initialSessionId }: { initialSessionId?: number |
       apiMessages = fullApiMessages;
     }
 
-    window.api.onChatChunk((text) => {
-      setTransientRetry(null); // stream resumed → clear high-demand banner
-      streamTextRef.current += text;
-      setStreamText((prev) => prev + text);
-      const s = stepsRef.current;
-      const last = s[s.length - 1];
-      if (last && last.type === "text") {
-        last.text += text;
-      } else {
-        s.push({ type: "text", text });
+    const unlistenChunk = window.api.onChatChunk((data: { text: string; sessionId: number }) => {
+      if (data.sessionId !== sid) {
+        // Handle background chunk
+        setSessionStates((prev) => {
+          const state = prev[data.sessionId];
+          if (!state) return prev;
+          const nextStreamText = state.streamText + data.text;
+          streamTextRefs.current[data.sessionId] = nextStreamText;
+          const nextSteps = [...state.steps];
+          const lastIdx = nextSteps.length - 1;
+          const last = nextSteps[lastIdx];
+          if (last && last.type === "text") {
+            nextSteps[lastIdx] = { ...last, text: last.text + data.text };
+          } else {
+            nextSteps.push({ type: "text", text: data.text });
+          }
+          stepsRefs.current[data.sessionId] = nextSteps;
+          return {
+            ...prev,
+            [data.sessionId]: {
+              ...state,
+              streamText: nextStreamText,
+              steps: nextSteps,
+            },
+          };
+        });
+        return;
       }
-      setSteps([...s]);
+
+      setSessionStates((prev) => {
+        const state = prev[sid];
+        if (!state) return prev;
+        const nextStreamText = state.streamText + data.text;
+        streamTextRefs.current[sid] = nextStreamText;
+        const nextSteps = [...state.steps];
+        const lastIdx = nextSteps.length - 1;
+        const last = nextSteps[lastIdx];
+        if (last && last.type === "text") {
+          nextSteps[lastIdx] = { ...last, text: last.text + data.text };
+        } else {
+          nextSteps.push({ type: "text", text: data.text });
+        }
+        stepsRefs.current[sid] = nextSteps;
+        return {
+          ...prev,
+          [sid]: {
+            ...state,
+            transientRetry: null,
+            streamText: nextStreamText,
+            steps: nextSteps,
+          },
+        };
+      });
     });
 
     const result = await window.api.chatSend(apiMessages, {
       model: useModel,
       effort: useEffort,
-    }, sessionId);
+    }, sid);
 
-    window.api.removeAllListeners("chat:chunk");
+    unlistenChunk();
 
-    setStreaming(false);
-    const finalContent = streamTextRef.current || result.fullText || "";
-    const completedSteps = stepsRef.current;
-    
-    // Reload API info to update rate limits
-    loadApiInfo();
+    // Read latest values from REFS (always current — sessionStates closure is stale)
+    const finalContent = result.fullText || streamTextRefs.current[sid] || "";
+    const completedSteps = stepsRefs.current[sid] || [];
+    const stepsJson = completedSteps.length > 0 ? JSON.stringify(completedSteps) : undefined;
 
-    setMessages((prev) => [
-      ...prev,
-      {
-        role: "assistant",
-        content: finalContent,
-        steps: completedSteps.length > 0 ? completedSteps : undefined,
-      },
-    ]);
+    // Side effects OUTSIDE updater (StrictMode invokes updaters twice → double DB inserts)
+    void window.api.addMessage(sid, "assistant", finalContent, stepsJson, undefined);
 
-    const stepsJson =
-      completedSteps.length > 0 ? JSON.stringify(completedSteps) : undefined;
-    const reasoningJson = stepsJson;
-    const toolCallsJson = undefined;
-    await window.api.addMessage(
-      sessionId,
-      "assistant",
-      finalContent,
-      reasoningJson,
-      toolCallsJson,
-    );
-
-    const userMsgCount = Math.ceil(newMessages.length / 2);
-
+    const prevMsgCount = sessionStates[sid]?.messages.length || 0;
+    const userMsgCount = Math.ceil((prevMsgCount + 2) / 2);
     if (userMsgCount === 1) {
-      window.api.generateTitle(sessionId, textOnlyMessages).then(async () => {
+      window.api.generateTitle(sid, textOnlyMessages).then(async () => {
         setSessions(await window.api.getSessions());
       });
     }
 
-    const contextEstimate =
-      newMessages.reduce((sum, m) => sum + m.content.length, 0) +
-      finalContent.length;
-
+    const prevContentLen = (sessionStates[sid]?.messages || []).reduce((sum: number, m: ChatMessage) => sum + m.content.length, 0);
+    const contextEstimate = prevContentLen + finalContent.length;
     if (userMsgCount > 0 && userMsgCount % 50 === 0) {
-      window.api.reTitle(sessionId, textOnlyMessages);
+      window.api.reTitle(sid, textOnlyMessages);
     } else if (contextEstimate >= 150000) {
-      window.api.reTitle(sessionId, textOnlyMessages);
+      window.api.reTitle(sid, textOnlyMessages);
     }
 
     if (contextEstimate >= 100000 && !summary) {
-      const r = await window.api.generateSummary(sessionId, textOnlyMessages);
-      if (r.success) contextSummaryRef.current = r.summary;
+      window.api.generateSummary(sid, textOnlyMessages).then((r: any) => {
+        if (r.success) contextSummaryRef.current = r.summary;
+      });
     }
+
+    // Clear refs AFTER reading values
+    streamTextRefs.current[sid] = "";
+    stepsRefs.current[sid] = [];
+
+    // Pure state update — no side effects inside (StrictMode safe)
+    setSessionStates((prev) => {
+      const state = prev[sid];
+      if (!state) return prev;
+      return {
+        ...prev,
+        [sid]: {
+          ...state,
+          streaming: false,
+          messages: [
+            ...state.messages,
+            {
+              role: "assistant" as const,
+              content: finalContent,
+              steps: completedSteps.length > 0 ? completedSteps : undefined,
+            },
+          ],
+          streamText: "",
+          steps: [],
+          status: currentSessionIdRef.current === sid ? "idle" : "completed-unread",
+        },
+      };
+    });
 
     setSessions(await window.api.getSessions());
     loadScheduledCount();
-    streamTextRef.current = "";
-    setStreamText("");
-    stepsRef.current = [];
-    setSteps([]);
+
+    // Refresh model exhaustion status (models may have been rate-limited during the run)
+    const models = await window.api.getAvailableModels();
+    const exhaustionInfo: Record<string, { exhausted: boolean; availableAt: string | null }> = {};
+    for (const model of models) {
+      exhaustionInfo[model] = await window.api.getModelExhaustionStatus(model);
+    }
+    setModelExhaustionStatus(exhaustionInfo);
   };
 
   const handleStop = async () => {
-    await window.api.chatStop();
+    if (currentSessionId !== null) {
+      await window.api.chatStop(currentSessionId);
+    }
   };
 
   const hasActivity = steps.length > 0;
@@ -981,6 +1276,7 @@ export default function Chat({ initialSessionId }: { initialSessionId?: number |
           streaming={streaming}
           profile={profile}
           scheduledCount={scheduledCount}
+          sessionStates={sessionStates}
           onNewChat={newChat}
           onSelectSession={selectSession}
           onDeleteSession={deleteSession}
@@ -1002,7 +1298,18 @@ export default function Chat({ initialSessionId }: { initialSessionId?: number |
         {view === "scheduled" ? (
           <ScheduledPosts profile={profile} onBack={() => setView("chat")} />
         ) : view === "profile" ? (
-          <ProfileView profile={profile} onBack={() => setView("chat")} />
+          <ProfileView
+            profile={profile}
+            onSaved={() => {
+              window.api.getProfile().then(setProfile);
+              loadApiInfo();
+            }}
+            onBack={() => {
+              window.api.getProfile().then(setProfile);
+              loadApiInfo();
+              setView("chat");
+            }}
+          />
         ) : (
           <>
             {onMainScreen ? (
@@ -1180,7 +1487,22 @@ export default function Chat({ initialSessionId }: { initialSessionId?: number |
                                     maxAttempts={transientRetry.maxAttempts}
                                     backoffMs={transientRetry.backoffMs}
                                     model={transientRetry.model}
-                                    onExpire={() => setTransientRetry(null)}
+                                    onExpire={() => {
+                                      const sid = currentSessionId;
+                                      if (sid !== null) {
+                                        setSessionStates((prev) => {
+                                          const state = prev[sid];
+                                          if (!state) return prev;
+                                          return {
+                                            ...prev,
+                                            [sid]: {
+                                              ...state,
+                                              transientRetry: null,
+                                            },
+                                          };
+                                        });
+                                      }
+                                    }}
                                   />
                                 )}
                                 {allToolsDone && !streamText && !transientRetry && (
@@ -1231,8 +1553,9 @@ export default function Chat({ initialSessionId }: { initialSessionId?: number |
                       ? "Start a new conversation..."
                       : "Message Soxial..."
                   }
-                  models={availableModels.length > 0 ? availableModels : ["Gemini 3.1 Flash Lite"]}
-                  modelSupportsEffort={(model) => model !== "gemini-3.1-pro"}
+                  models={availableModels.length > 0 ? availableModels : ["gemini-3.1-flash-lite"]}
+                  model={selectedModel}
+                  modelSupportsEffort={(model) => model !== "gemini-3.1-pro" && !model.startsWith("glm")}
                   isStreaming={streaming}
                   onStop={handleStop}
                   queue={queuedMessages}

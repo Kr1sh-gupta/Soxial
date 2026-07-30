@@ -36,6 +36,26 @@ async function testApiKeyTier(apiKey: string): Promise<'free' | 'pro'> {
   }
 }
 
+async function testZhipuApiKeyTier(apiKey: string, baseURL: string): Promise<'free' | 'pro'> {
+  try {
+    const { createZhipu } = await import('zhipu-ai-provider')
+    const zhipu = createZhipu({ baseURL, apiKey })
+
+    // Probe via glm-5.2 (Pro tier only)
+    await generateText({
+      model: zhipu('glm-5.2'),
+      prompt: 'Respond with just "OK"',
+      maxOutputTokens: 2,
+      maxRetries: 0,
+    })
+    return 'pro'
+  } catch (error: any) {
+    // 429 / quota / permission denied for glm-5.2 → classify as 'free'
+    logger.info('api-tier', `Zhipu tier probe failed: ${(error?.message || '').substring(0, 120)}`)
+    return 'free'
+  }
+}
+
 export async function detectApiTier(force: boolean = false): Promise<'free' | 'pro'> {
   const currentTier = getApiTier()
 
@@ -50,27 +70,55 @@ export async function detectApiTier(force: boolean = false): Promise<'free' | 'p
 
   logger.info('api-tier', 'detecting API tier for all keys')
 
-  const apiKeys = getApiKeys()
   let hasProKey = false
 
-  for (const key of apiKeys) {
-    logger.info('api-tier', `testing tier for API key: ${key.name}`)
+  // 1. Detect Google key tiers
+  const googleKeys = getApiKeys('google')
+  for (const key of googleKeys) {
+    logger.info('api-tier', `testing tier for Google API key: ${key.name}`)
     const tier = await testApiKeyTier(key.api_key)
-    logger.info('api-tier', `API key ${key.name} detected as ${tier} tier`)
-
+    logger.info('api-tier', `Google key ${key.name} detected as ${tier} tier`)
     updateApiKeyTier(key.id, tier)
-
     if (tier === 'pro') hasProKey = true
   }
 
+  // 2. Detect Z.AI (Zhipu) key tiers
   const profile = getProfile()
-  const primaryApiKey = profile?.gemini_api_key || process.env.GEMINI_API_KEY
-  if (primaryApiKey) {
-    logger.info('api-tier', 'testing tier for primary profile API key')
-    const primaryTier = await testApiKeyTier(primaryApiKey)
-    logger.info('api-tier', `Primary API key detected as ${primaryTier} tier`)
+  const zaiBaseURL = profile?.zai_coding_plan
+    ? 'https://api.z.ai/api/coding/paas/v4'
+    : 'https://api.z.ai/api/paas/v4'
 
-    if (primaryTier === 'pro') hasProKey = true
+  const zhipuKeys = getApiKeys('zhipu')
+  for (const key of zhipuKeys) {
+    // Coding plan has no free tier — always pro, skip probe
+    if (profile?.zai_coding_plan) {
+      logger.info('api-tier', `Z.AI key ${key.name} is coding plan → forced pro`)
+      updateApiKeyTier(key.id, 'pro')
+      hasProKey = true
+      continue
+    }
+    logger.info('api-tier', `testing tier for Z.AI API key: ${key.name}`)
+    const tier = await testZhipuApiKeyTier(key.api_key, zaiBaseURL)
+    logger.info('api-tier', `Z.AI key ${key.name} detected as ${tier} tier`)
+    updateApiKeyTier(key.id, tier)
+    if (tier === 'pro') hasProKey = true
+  }
+
+  // 3. Test primary profile keys (in case they weren't synced to api_keys yet)
+  const primaryGoogle = profile?.gemini_api_key || process.env.GEMINI_API_KEY
+  if (primaryGoogle) {
+    logger.info('api-tier', 'testing tier for primary Google profile API key')
+    const tier = await testApiKeyTier(primaryGoogle)
+    logger.info('api-tier', `Primary Google API key detected as ${tier} tier`)
+    if (tier === 'pro') hasProKey = true
+  }
+
+  const primaryZhipu = profile?.zai_api_key
+  if (primaryZhipu) {
+    logger.info('api-tier', 'testing tier for primary Z.AI profile API key')
+    const tier = await testZhipuApiKeyTier(primaryZhipu, zaiBaseURL)
+    logger.info('api-tier', `Primary Z.AI API key detected as ${tier} tier`)
+    if (tier === 'pro') hasProKey = true
   }
 
   const globalTier = hasProKey ? 'pro' : 'free'

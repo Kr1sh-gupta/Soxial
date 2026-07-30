@@ -3,10 +3,10 @@ import { join } from 'path'
 import { readFileSync, existsSync } from 'fs'
 import { config } from 'dotenv'
 config()
-import { getDb, getProfile, updateProfile, queryAll, insertRow, createChatSession, getChatSessions, getChatMessages, addChatMessage, updateChatSessionTitle, getChatSessionContextSummary, updateChatSessionContextSummary, deleteChatSession, getQuickActions, setQuickActions, getQuickActionsContext, getApiTier, setApiTier, getAvailableModels, getDefaultModel, getApiKeys, addApiKey, removeApiKey, getModelExhaustionStatus } from './db'
+import { getDb, getProfile, updateProfile, queryAll, insertRow, createChatSession, getChatSessions, getChatMessages, addChatMessage, updateChatSessionTitle, getChatSessionContextSummary, updateChatSessionContextSummary, deleteChatSession, getQuickActions, setQuickActions, getQuickActionsContext, getApiTier, setApiTier, getAvailableModels, getDefaultModel, getApiKeys, addApiKey, removeApiKey, getModelExhaustionStatus, getSelectedModel, setSelectedModel } from './db'
 import { ensureCliInstalled, ensureRdtAuth, ensureTwitterAuth, checkCli, checkCliAuth, runCli } from './cli'
 import { gatherOnboardingSocialData } from './social-content'
-import { runAgent, generateText, ONBOARDING_SYSTEM_PROMPT, createOnboardingTools, installOnboardingAnswerListener, clearPendingQuestions, createChatTools, installChatAnswerListener, clearPendingChatQuestions, ONBOARDING_MODEL_FALLBACK, CHAT_MODEL_FALLBACK_PRO, CHAT_MODEL_FALLBACK_FREE } from './agent'
+import { runAgent, generateText, ONBOARDING_SYSTEM_PROMPT, createOnboardingTools, installOnboardingAnswerListener, clearPendingQuestions, createChatTools, installChatAnswerListener, clearPendingChatQuestions, ONBOARDING_MODEL_FALLBACK, CHAT_MODEL_FALLBACK_PRO, CHAT_MODEL_FALLBACK_FREE, getOnboardingFallbackChain, getTitleModel, getQuickActionModel } from './agent'
 import { detectApiTier } from './api-tier'
 import { logger } from './log'
 
@@ -176,7 +176,7 @@ app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()
 })
 
-// Onboarding auth gate: blocks gather until X/Reddit cookies are present.
+  // Onboarding auth gate: blocks gather until X/Reddit cookies are present.
 const pendingAuthRetries = new Map<string, (retry: boolean) => void>()
 let authRetryListenerInstalled = false
 function installAuthRetryListener() {
@@ -190,6 +190,12 @@ function installAuthRetryListener() {
     }
   })
 }
+
+interface ActiveChatRun {
+  abortController: AbortController
+  injectedMessages: Message[]
+}
+const activeChatRuns = new Map<number, ActiveChatRun>()
 
 function setupIpc() {
   logger.info('main', 'registering IPC handlers')
@@ -377,7 +383,7 @@ function setupIpc() {
           (error) => resolve({ text: '', error }),
           (text) => mainWindow?.webContents.send('onboarding:reasoning', text),
           (info) => mainWindow?.webContents.send('onboarding:transientRetry', info),
-          { maxSteps: 60, fallbackChain: ONBOARDING_MODEL_FALLBACK },
+          { maxSteps: 60, fallbackChain: getOnboardingFallbackChain() },
           onboardingTools,
           ONBOARDING_SYSTEM_PROMPT
         )
@@ -414,7 +420,7 @@ function setupIpc() {
           (error) => resolve({ text: '', error }),
           (text) => mainWindow?.webContents.send('onboarding:reasoning', text),
           (info) => mainWindow?.webContents.send('onboarding:transientRetry', info),
-          { maxSteps: 60, fallbackChain: ONBOARDING_MODEL_FALLBACK },
+          { maxSteps: 60, fallbackChain: getOnboardingFallbackChain() },
           onboardingTools,
           ONBOARDING_SYSTEM_PROMPT
         )
@@ -455,12 +461,20 @@ function setupIpc() {
     return getDefaultModel()
   })
 
-  ipcMain.handle('api:getApiKeys', () => {
-    return getApiKeys()
+  ipcMain.handle('api:getSelectedModel', () => {
+    return getSelectedModel()
   })
 
-  ipcMain.handle('api:addApiKey', (_e, apiKey: string) => {
-    return addApiKey(apiKey)
+  ipcMain.handle('api:setSelectedModel', (_e, model: string) => {
+    setSelectedModel(model)
+  })
+
+  ipcMain.handle('api:getApiKeys', (_e, provider: string = 'google') => {
+    return getApiKeys(provider)
+  })
+
+  ipcMain.handle('api:addApiKey', (_e, apiKey: string, provider: string = 'google') => {
+    return addApiKey(apiKey, provider)
   })
 
   ipcMain.handle('api:removeApiKey', (_e, id: number) => {
@@ -485,76 +499,85 @@ function setupIpc() {
     return sessionId
   })
 
-  let chatAbortController: AbortController | null = null
-  let chatInjectedMessages: Message[] = []
-
   ipcMain.handle('chat:send', async (_e, messages: Message[], options?: { model?: string; effort?: string }, sessionId?: number) => {
     logger.info('main', `chat:send — ${messages.length} messages (session ${sessionId ?? 'none'})`, options)
 
-    chatAbortController = new AbortController()
-    chatInjectedMessages = []
-    clearPendingChatQuestions()
-    const chunks: string[] = []
+    const sid = sessionId ?? 0
+    const run: ActiveChatRun = {
+      abortController: new AbortController(),
+      injectedMessages: []
+    }
+    activeChatRuns.set(sid, run)
 
-    const sendChatQuestion = (q: { id: string; text: string; type: 'single' | 'multi' | 'text'; options?: string[] }) =>
-      mainWindow?.webContents.send('chat:question', q)
-    const chatTools = createChatTools(sendChatQuestion)
+    try {
+      clearPendingChatQuestions()
+      const chunks: string[] = []
 
-    // Determine fallback chain based on API tier
-    const tier = getApiTier().tier
-    const fallbackChain = tier === 'pro' ? CHAT_MODEL_FALLBACK_PRO : CHAT_MODEL_FALLBACK_FREE
+      const sendChatQuestion = (q: { id: string; text: string; type: 'single' | 'multi' | 'text'; options?: string[] }) =>
+        mainWindow?.webContents.send('chat:question', { ...q, sessionId: sid })
+      const chatTools = createChatTools(sendChatQuestion)
 
-    await new Promise<void>((resolve) => {
-      runAgent(
-        messages,
-        (chunk) => {
-          chunks.push(chunk)
-          mainWindow?.webContents.send('chat:chunk', chunk)
-        },
-        (name, args) => { if (name !== 'ask_user') mainWindow?.webContents.send('chat:toolCall', { name, args }) },
-        (name, result) => { if (name !== 'ask_user') mainWindow?.webContents.send('chat:toolResult', { name, result }) },
-        () => resolve(),
-        (error) => {
-          mainWindow?.webContents.send('chat:error', error)
-          resolve()
-        },
-        (text) => mainWindow?.webContents.send('chat:reasoning', text),
-        (info) => mainWindow?.webContents.send('chat:transientRetry', info),
-        {
-          ...options,
-          fallbackChain,
-        },
-        chatTools,
-        undefined,
-        chatAbortController ?? undefined,
-        () => {
-          const injected = chatInjectedMessages
-          chatInjectedMessages = []
-          return injected
-        },
-        (injected) => {
-          chunks.length = 0
-          mainWindow?.webContents.send('chat:injected', injected)
-        },
-        sessionId,
-      )
-    })
+      // Determine fallback chain based on API tier
+      const tier = getApiTier().tier
+      const fallbackChain = tier === 'pro' ? CHAT_MODEL_FALLBACK_PRO : CHAT_MODEL_FALLBACK_FREE
 
-    chatAbortController = null
-    chatInjectedMessages = []
-    logger.info('main', `chat:send done — ${chunks.join('').length} chars`)
-    return { fullText: chunks.join('') }
+      await new Promise<void>((resolve) => {
+        runAgent(
+          messages,
+          (chunk) => {
+            chunks.push(chunk)
+            mainWindow?.webContents.send('chat:chunk', { text: chunk, sessionId: sid })
+          },
+          (name, args) => { if (name !== 'ask_user') mainWindow?.webContents.send('chat:toolCall', { name, args, sessionId: sid }) },
+          (name, result) => { if (name !== 'ask_user') mainWindow?.webContents.send('chat:toolResult', { name, result, sessionId: sid }) },
+          () => resolve(),
+          (error) => {
+            mainWindow?.webContents.send('chat:error', { error, sessionId: sid })
+            resolve()
+          },
+          (text) => mainWindow?.webContents.send('chat:reasoning', { text, sessionId: sid }),
+          (info) => mainWindow?.webContents.send('chat:transientRetry', { ...info, sessionId: sid }),
+          {
+            ...options,
+            fallbackChain,
+          },
+          chatTools,
+          undefined,
+          run.abortController,
+          () => {
+            const injected = run.injectedMessages
+            run.injectedMessages = []
+            return injected
+          },
+          (injected) => {
+            chunks.length = 0
+            mainWindow?.webContents.send('chat:injected', { messages: injected, sessionId: sid })
+          },
+          sessionId,
+          (model) => {
+            mainWindow?.webContents.send('chat:modelSwitch', { model, sessionId: sid })
+          },
+        )
+      })
+
+      logger.info('main', `chat:send done — ${chunks.join('').length} chars`)
+      return { fullText: chunks.join('') }
+    } finally {
+      activeChatRuns.delete(sid)
+    }
   })
 
-  ipcMain.handle('chat:inject', async (_e, payload: string | { content: string; attachments?: { name: string; mimeType: string; data: string }[] }) => {
+  ipcMain.handle('chat:inject', async (_e, payload: string | { content: string; attachments?: { name: string; mimeType: string; data: string }[] }, sessionId?: number) => {
+    const sid = sessionId ?? 0
+    const run = activeChatRuns.get(sid)
     const content = typeof payload === 'string' ? payload : payload.content
     const attachments = typeof payload === 'string' ? [] : payload.attachments || []
     const trimmed = content.trim()
     if (!trimmed && attachments.length === 0) return { success: false, error: 'empty' }
-    if (!chatAbortController || chatAbortController.signal.aborted) {
-      return { success: false, error: 'no active chat run' }
+    if (!run || run.abortController.signal.aborted) {
+      return { success: false, error: 'no active chat run for this session' }
     }
-    chatInjectedMessages.push({
+    run.injectedMessages.push({
       role: 'user',
       content: trimmed,
       parts: attachments.length
@@ -569,13 +592,17 @@ function setupIpc() {
           ]
         : undefined,
     })
-    logger.info('main', `chat:inject queued (${trimmed.length} chars, ${attachments.length} attachment(s))`)
+    logger.info('main', `chat:inject queued for session ${sid} (${trimmed.length} chars, ${attachments.length} attachment(s))`)
     return { success: true }
   })
 
-  ipcMain.handle('chat:stop', async () => {
-    logger.info('main', 'chat:stop')
-    chatAbortController?.abort()
+  ipcMain.handle('chat:stop', async (_e, sessionId?: number) => {
+    const sid = sessionId ?? 0
+    logger.info('main', `chat:stop for session ${sid}`)
+    const run = activeChatRuns.get(sid)
+    if (run) {
+      run.abortController.abort()
+    }
     return { success: true }
   })
 
@@ -666,7 +693,7 @@ function setupIpc() {
       const text = messages.map(m => `${m.role}: ${m.content}`).join('\n').slice(0, 3000)
       const title = await generateText([
         { role: 'user', content: `Generate a brief (under 6 words) title for this conversation:\n\n${text}` }
-      ], 'You generate concise conversation titles. Return only the title, no explanation, no quotes.')
+      ], 'You generate concise conversation titles. Return only the title, no explanation, no quotes.', { model: getTitleModel() })
       const clean = title.replace(/["'"]/g, '').trim().slice(0, 60)
       updateChatSessionTitle(sessionId, clean || 'New Chat')
       return { success: true, title: clean }
@@ -745,7 +772,7 @@ async function generateQuickActions(): Promise<string[]> {
   const context = getQuickActionsContext()
   const text = await generateText([
     { role: 'user', content: `Based on this profile and strategy context, suggest 5 specific, actionable things the user could ask their social media AI agent to do right now. Each suggestion must be a single concise sentence under 10 words. Return them as a JSON array of strings, no markdown, no numbering.\n\nContext:\n${context}` }
-  ], 'You generate personalized quick-action suggestions for a social media AI agent app.')
+  ], 'You generate personalized quick-action suggestions for a social media AI agent app.', { model: getQuickActionModel() })
   let suggestions: string[]
   try {
     const parsed = JSON.parse(text)

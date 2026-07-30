@@ -22,9 +22,9 @@ interface Window {
     retryOnboardingAuth: (id: string, retry: boolean) => void
     onOnboardingAuthRequired: (cb: (payload: { id: string; twitter: { needed: boolean; ok: boolean }; reddit: { needed: boolean; ok: boolean } }) => void) => void
     chatSend: (messages: any[], options?: { model?: string; effort?: string }, sessionId?: number) => Promise<any>
-    chatInject: (content: string | { content: string; attachments?: { name: string; mimeType: string; data: string }[] }) => Promise<any>
-    chatStop: () => Promise<any>
-    onChatQuestion: (cb: (q: { id: string; text: string; type: 'single' | 'multi' | 'text'; options?: string[] }) => void) => void
+    chatInject: (payload: any, sessionId?: number) => Promise<any>
+    chatStop: (sessionId?: number) => Promise<any>
+    onChatQuestion: (cb: (q: { id: string; text: string; type: 'single' | 'multi' | 'text'; options?: string[]; sessionId: number }) => void) => () => void
     sendChatAnswer: (id: string, answer: string | string[]) => void
     createSession: () => Promise<number>
     getSessions: () => Promise<any[]>
@@ -39,18 +39,21 @@ interface Window {
     generateQuickActions: () => Promise<any>
     getMedia: (filename: string) => Promise<any>
     fetchLinkPreview: (url: string) => Promise<any>
-    onChatChunk: (cb: (text: string) => void) => void
-    onChatToolCall: (cb: (data: { name: string; args: any }) => void) => void
-    onChatToolResult: (cb: (data: { name: string; result: any }) => void) => void
-    onChatError: (cb: (error: string) => void) => void
-    onChatReasoning: (cb: (text: string) => void) => void
-    onChatTransientRetry: (cb: (info: { attempt: number; maxAttempts: number; backoffMs: number; model: string }) => void) => void
-    onChatInjected: (cb: (messages: { role: string; content: string | null; attachments?: { name: string; mimeType: string; data: string }[] }[]) => void) => void
+    onChatChunk: (cb: (data: { text: string; sessionId: number }) => void) => () => void
+    onChatToolCall: (cb: (data: { name: string; args: any; sessionId: number }) => void) => () => void
+    onChatToolResult: (cb: (data: { name: string; result: any; sessionId: number }) => void) => () => void
+    onChatError: (cb: (data: { error: string; sessionId: number }) => void) => () => void
+    onChatReasoning: (cb: (data: { text: string; sessionId: number }) => void) => () => void
+    onChatTransientRetry: (cb: (info: { attempt: number; maxAttempts: number; backoffMs: number; model: string; sessionId: number }) => void) => () => void
+    onChatInjected: (cb: (data: { messages: any[]; sessionId: number }) => void) => () => void
+    onChatModelSwitch: (cb: (data: { model: string; sessionId: number }) => void) => () => void
     getTier: () => Promise<{ tier: string }>
     getAvailableModels: () => Promise<string[]>
     getDefaultModel: () => Promise<string>
-    getApiKeys: () => Promise<Array<{ id: number; name: string; api_key: string; provider: string; tier: string; is_active: number; created_at: string; last_used_at: string | null }>>
-    addApiKey: (apiKey: string) => Promise<number>
+    getSelectedModel: () => Promise<string | null>
+    setSelectedModel: (model: string) => Promise<void>
+    getApiKeys: (provider?: string) => Promise<Array<{ id: number; name: string; api_key: string; provider: string; tier: string; is_active: number; created_at: string; last_used_at: string | null }>>
+    addApiKey: (apiKey: string, provider?: string) => Promise<number>
     removeApiKey: (id: number) => Promise<void>
     getModelExhaustionStatus: (model: string) => Promise<{ exhausted: boolean; availableAt: string | null }>
     detectApiTier: (force?: boolean) => Promise<'free' | 'pro'>

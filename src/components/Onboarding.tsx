@@ -1,5 +1,8 @@
+"use client";
+
 import { useState, useEffect, useRef } from 'react'
-import { Check, Sparkles, ArrowRight, RefreshCw, ShieldAlert, Search as SearchIcon, Globe as GlobeIcon, Image as ImageIcon, AtSign, List, Eye, Send, CornerUpLeft, Newspaper, Heart, Repeat2, Bookmark, UserPlus, Info, Layers, BookOpen, MessageCircle, BadgeCheck, Flame, ThumbsUp, Database, Lightbulb, ShieldCheck, Gauge, Crosshair, SquarePen, RotateCcw, CalendarClock, Save, Download, Briefcase, Users, Package, Target, FileText, Trash2, TrendingUp, MessageSquare, Plus } from 'lucide-react'
+import { Check, Sparkles, ArrowRight, RefreshCw, ShieldAlert, Search as SearchIcon, Globe as GlobeIcon, Image as ImageIcon, AtSign, List, Eye, Send, CornerUpLeft, Newspaper, Heart, Repeat2, Bookmark, UserPlus, Info, Layers, BookOpen, MessageCircle, BadgeCheck, Flame, ThumbsUp, Database, Lightbulb, ShieldCheck, Gauge, Crosshair, SquarePen, RotateCcw, CalendarClock, Save, Download, Briefcase, Users, Package, Target, FileText, Trash2, TrendingUp, MessageSquare, Plus, KeyRound } from 'lucide-react'
+import { motion, AnimatePresence } from 'motion/react'
 import { Message, MessageContent } from 'src/components/ai-elements/message'
 import { ChainOfThoughtStep } from 'src/components/ai-elements/chain-of-thought'
 import {
@@ -11,8 +14,9 @@ import { QuestionInput, QuestionData } from 'src/components/ui/question-input'
 import { AppLogo } from 'src/components/ui/app-logo'
 import { ErrorBoundary } from 'src/components/ui/error-boundary'
 import { TransientRetryStep } from 'src/components/ui/transient-retry-step'
+import { cn } from 'src/lib/utils'
 
-const EASE = 'cubic-bezier(0.32, 0.72, 0, 1)'
+const EASE = 'cubic-bezier(0.16, 1, 0.3, 1)'
 
 const GOALS = ['Client acquisition', 'Job hunting', 'Audience building', 'Thought leadership', 'Product promotion', 'Community building']
 
@@ -45,15 +49,52 @@ function BackgroundGlow() {
   return (
     <div className="fixed inset-0 pointer-events-none overflow-hidden -z-10">
       <div
-        className="absolute top-[-15%] left-[25%] w-[600px] h-[600px] rounded-full"
-        style={{ background: 'radial-gradient(circle, #3b82f6 0%, transparent 65%)', opacity: 0.04 }}
+        className="absolute top-[-15%] left-[25%] w-[800px] h-[800px] rounded-full"
+        style={{ background: 'radial-gradient(circle, rgba(59,130,246,0.06) 0%, transparent 70%)' }}
       />
       <div
-        className="absolute bottom-[-10%] right-[12%] w-[500px] h-[500px] rounded-full"
-        style={{ background: 'radial-gradient(circle, #8b5cf6 0%, transparent 65%)', opacity: 0.03 }}
+        className="absolute bottom-[-10%] right-[12%] w-[600px] h-[600px] rounded-full"
+        style={{ background: 'radial-gradient(circle, rgba(139,92,246,0.04) 0%, transparent 70%)' }}
       />
     </div>
   )
+}
+
+const springTransition = {
+  type: "spring" as const,
+  stiffness: 450,
+  damping: 38
+}
+
+const toggleSpring = {
+  type: "spring" as const,
+  stiffness: 500,
+  damping: 30
+}
+
+const stepVariants = {
+  hidden: { opacity: 0, y: 20 },
+  show: {
+    opacity: 1,
+    y: 0,
+    transition: {
+      type: "spring" as const,
+      stiffness: 350,
+      damping: 30,
+      staggerChildren: 0.08,
+      delayChildren: 0.1
+    }
+  },
+  exit: {
+    opacity: 0,
+    y: -20,
+    transition: { duration: 0.25 }
+  }
+}
+
+const childVariants = {
+  hidden: { opacity: 0, y: 12 },
+  show: { opacity: 1, y: 0, transition: { type: "spring" as const, stiffness: 350, damping: 30 } }
 }
 
 export default function Onboarding({ onComplete }: { onComplete: (sessionId?: number) => void }) {
@@ -74,289 +115,328 @@ export default function Onboarding({ onComplete }: { onComplete: (sessionId?: nu
   const update = (key: string, value: any) => setFormData(prev => ({ ...prev, [key]: value }))
 
   return (
-    <div className="flex h-full min-h-screen bg-background">
+    <div className="flex h-full min-h-screen bg-[#050507]">
       <BackgroundGlow />
 
       <div className={`flex-1 flex flex-col ${step === 4 ? 'overflow-hidden' : 'overflow-y-auto'}`}>
-        <div
-          key={step}
-          className={step === 4
-            ? "flex-1 flex flex-col h-full relative overflow-hidden"
-            : "max-w-xl mx-auto px-8 py-20 w-full animate-in fade-in slide-in-from-bottom-3 duration-700"
-          }
-          style={step !== 4 ? { animationTimingFunction: EASE } : undefined}
-        >
-          {step === 0 && <StepWelcome onNext={() => setStep(1)} />}
-          {step === 1 && <StepIdentity formData={formData} update={update} onNext={() => setStep(2)} />}
-          {step === 2 && <StepApiKey formData={formData} update={update} onBack={() => setStep(1)} onNext={() => setStep(3)} />}
-          {step === 3 && <StepPlatforms formData={formData} update={update} onBack={() => setStep(2)} onNext={() => setStep(4)} />}
-          {step === 4 && (
-            <ErrorBoundary>
-              <StepAiOnboarding formData={formData} onComplete={onComplete} onBack={() => setStep(3)} />
-            </ErrorBoundary>
-          )}
-        </div>
+        <AnimatePresence mode="wait">
+          <motion.div
+            key={step}
+            variants={stepVariants}
+            initial="hidden"
+            animate="show"
+            exit="exit"
+            className={step === 4
+              ? "flex-1 flex flex-col h-full relative overflow-hidden"
+              : "max-w-[720px] mx-auto px-8 py-20 w-full"
+            }
+          >
+            {step === 0 && <StepWelcome onNext={() => setStep(1)} />}
+            {step === 1 && <StepIdentity formData={formData} update={update} onNext={() => setStep(2)} />}
+            {step === 2 && <StepApiKey formData={formData} update={update} onBack={() => setStep(1)} onNext={() => setStep(3)} />}
+            {step === 3 && <StepPlatforms formData={formData} update={update} onBack={() => setStep(2)} onNext={() => setStep(4)} />}
+            {step === 4 && (
+              <ErrorBoundary>
+                <StepAiOnboarding formData={formData} onComplete={onComplete} onBack={() => setStep(3)} />
+              </ErrorBoundary>
+            )}
+          </motion.div>
+        </AnimatePresence>
       </div>
     </div>
   )
 }
 
-function Input({ label, value, onChange, placeholder, type = 'text', hint }: any) {
+function Input({ label, value, onChange, placeholder, type = 'text', hint, icon: Icon }: any) {
   return (
-    <div>
-      <label className="block text-[13px] font-medium text-muted-foreground mb-2 tracking-tight">{label}</label>
-      <div
-        className="rounded-2xl bg-white/[0.02] ring-1 ring-white/[0.06] transition-all duration-500 focus-within:ring-white/[0.15] focus-within:bg-white/[0.035]"
-        style={{ transitionTimingFunction: EASE }}
-      >
+    <div className="space-y-2">
+      <label className="block text-[10px] uppercase tracking-[0.16em] text-zinc-500 font-bold block ml-1">{label}</label>
+      <div className="relative flex items-center group">
         <input
           type={type}
           value={value || ''}
           onChange={(e) => onChange(e.target.value)}
           placeholder={placeholder}
-          className="w-full bg-transparent px-4 py-3 text-sm text-foreground placeholder:text-muted-foreground/40 outline-none"
+          className={cn(
+            "w-full bg-[#040406]/50 hover:bg-[#040406]/80 focus:bg-black/90 border border-white/[0.05] hover:border-white/[0.08] focus:border-blue-500/40 rounded-xl px-4 py-3.5 text-sm text-white placeholder:text-zinc-700 outline-none focus:outline-none transition-all shadow-[inset_0_1.5px_3px_rgba(0,0,0,0.9)] focus:ring-1 focus:ring-blue-500/10",
+            Icon ? "pl-11" : "px-4.5"
+          )}
         />
+        {Icon && <Icon className="size-4 text-zinc-600 group-focus-within:text-blue-500/50 absolute left-4 transition-colors" />}
       </div>
-      {hint && <p className="mt-2 text-xs text-muted-foreground/50">{hint}</p>}
+      {hint && <p className="mt-2 text-xs text-zinc-500/50 ml-1">{hint}</p>}
     </div>
   )
 }
 
 function Textarea({ label, value, onChange, placeholder, hint }: any) {
   return (
-    <div>
-      <label className="block text-[13px] font-medium text-muted-foreground mb-2 tracking-tight">{label}</label>
-      <div
-        className="rounded-2xl bg-white/[0.02] ring-1 ring-white/[0.06] transition-all duration-500 focus-within:ring-white/[0.15] focus-within:bg-white/[0.035]"
-        style={{ transitionTimingFunction: EASE }}
-      >
+    <div className="space-y-2">
+      <label className="block text-[10px] uppercase tracking-[0.16em] text-zinc-500 font-bold block ml-1">{label}</label>
+      <div className="relative flex items-center">
         <textarea
           value={value || ''}
           onChange={(e) => onChange(e.target.value)}
           placeholder={placeholder}
           rows={3}
-          className="w-full bg-transparent px-4 py-3 text-sm text-foreground placeholder:text-muted-foreground/40 outline-none resize-none"
+          className="w-full bg-[#040406]/50 hover:bg-[#040406]/80 focus:bg-black/90 border border-white/[0.05] hover:border-white/[0.08] focus:border-blue-500/40 rounded-xl px-4.5 py-3.5 text-sm text-white placeholder:text-zinc-700 outline-none focus:outline-none transition-all shadow-[inset_0_1.5px_3px_rgba(0,0,0,0.9)] focus:ring-1 focus:ring-blue-500/10 resize-none"
         />
       </div>
-      {hint && <p className="mt-2 text-xs text-muted-foreground/50">{hint}</p>}
+      {hint && <p className="mt-2 text-xs text-zinc-500/50 ml-1">{hint}</p>}
     </div>
   )
 }
 
 function PrimaryButton({ children, onClick, disabled, className = '' }: { children: React.ReactNode; onClick: () => void; disabled?: boolean; className?: string }) {
   return (
-    <button
+    <motion.button
       onClick={onClick}
       disabled={disabled}
-      className={`group flex items-center justify-center gap-3 rounded-full text-sm font-semibold disabled:opacity-25 disabled:cursor-not-allowed
-      transition-all duration-500 active:scale-[0.98] hover:opacity-90 ${className}`}
-      style={{ transitionTimingFunction: EASE }}
+      whileTap={{ scale: 0.96 }}
+      className={`group flex items-center justify-center gap-3 rounded-full text-[13px] font-bold disabled:opacity-25 disabled:pointer-events-none
+      transition-all duration-300 hover:bg-zinc-100 ${className}`}
     >
       <span>{children}</span>
-      <span
-        className="w-7 h-7 rounded-full bg-current/15 flex items-center justify-center transition-transform duration-500 group-hover:translate-x-0.5"
-        style={{ transitionTimingFunction: EASE }}
-      >
-        <ArrowRight className="size-3.5" />
+      <span className="w-7 h-7 rounded-full bg-zinc-900/15 flex items-center justify-center transition-transform duration-300 group-hover:translate-x-0.5">
+        <ArrowRight className="size-3.5 stroke-[2.5]" />
       </span>
-    </button>
+    </motion.button>
   )
 }
 
 function StepWelcome({ onNext }: { onNext: () => void }) {
   return (
-    <div className="flex flex-col items-center text-center py-12">
-      <div className="mb-6">
-        <AppLogo 
-          showLabel={false} 
-          iconClassName="size-16"
-        />
-      </div>
-      <h1 className="text-[32px] font-semibold text-foreground tracking-tight leading-tight max-w-md">
+    <div className="flex flex-col items-center text-center py-8">
+      <motion.div variants={childVariants} className="mb-8">
+        <div className="size-16 rounded-2xl bg-white/[0.02] border border-white/[0.05] shadow-[0_8px_32px_rgba(0,0,0,0.4)] inset-glow flex items-center justify-center">
+          <AppLogo 
+            showLabel={false} 
+            iconClassName="size-9"
+          />
+        </div>
+      </motion.div>
+      <motion.h1 variants={childVariants} className="text-[32px] md:text-4xl font-bold text-white tracking-tight leading-none max-w-md">
         Hi, I&rsquo;m Soxial
-      </h1>
-      <p className="text-muted-foreground text-[15px] leading-relaxed mt-3 max-w-sm">
+      </motion.h1>
+      <motion.p variants={childVariants} className="text-zinc-400 text-sm leading-relaxed mt-4 max-w-sm font-medium">
         A personal social media manager that studies your voice, audience, and current standing, then builds a growth system you approve before anything goes public.
-      </p>
+      </motion.p>
 
-      <div className="flex items-center gap-8 mt-10 text-[13px] text-muted-foreground/60">
-        <div className="flex items-center gap-2">
-          <XLogo className="size-4" />
+      <motion.div variants={childVariants} className="flex items-center gap-8 mt-10 text-xs text-zinc-500 font-bold">
+        <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-white/[0.02] border border-white/[0.04] shadow-sm hover:text-white transition-colors">
+          <XLogo className="size-3.5" />
           <span>X / Twitter</span>
         </div>
-        <div className="flex items-center gap-2">
-          <RedditLogo className="size-4" />
+        <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-white/[0.02] border border-white/[0.04] shadow-sm hover:text-white transition-colors">
+          <RedditLogo className="size-3.5" />
           <span>Reddit</span>
         </div>
-      </div>
+      </motion.div>
 
-      <PrimaryButton onClick={onNext} className="mt-10 bg-foreground text-background py-3.5 px-8">
-        Get Started
-      </PrimaryButton>
+      <motion.div variants={childVariants} className="mt-12 w-full flex justify-center">
+        <PrimaryButton onClick={onNext} className="bg-white text-zinc-950 py-3.5 px-8 shadow-lg">
+          Get Started
+        </PrimaryButton>
+      </motion.div>
 
-      <p className="text-[11px] text-muted-foreground/30 mt-6 leading-relaxed max-w-xs">
-        One-time setup. Takes about 5 minutes. You&rsquo;ll answer a few questions and the AI builds your strategy.
-      </p>
+      <motion.p variants={childVariants} className="text-[10px] text-zinc-600 font-bold uppercase tracking-[0.16em] mt-8 leading-relaxed max-w-xs">
+        One-time setup · Takes about 5 minutes
+      </motion.p>
     </div>
   )
 }
 
 function StepIdentity({ formData, update, onNext }: any) {
   return (
-    <div className="space-y-7">
-      <div>
-        <h1 className="text-[28px] font-semibold text-foreground tracking-tight leading-tight">Tell me about you</h1>
-        <p className="text-muted-foreground mt-2 text-[14px] leading-relaxed">Basic info to personalize your strategy.</p>
-      </div>
+    <div className="space-y-10">
+      <motion.div variants={childVariants}>
+        <h1 className="text-3xl font-bold text-white tracking-tight leading-none">Tell me about you</h1>
+        <p className="text-zinc-500 mt-2 text-sm font-semibold">Basic info to personalize your strategy.</p>
+      </motion.div>
 
-      <div className="grid grid-cols-2 gap-3.5">
-        <Input label="Name" value={formData.name} onChange={(v: string) => update('name', v)} placeholder="Jane Doe" />
-        <Input label="Timezone" value={formData.timezone} onChange={(v: string) => update('timezone', v)} placeholder="UTC+1" />
-      </div>
-      <Input label="What do you do?" value={formData.niche} onChange={(v: string) => update('niche', v)} placeholder="e.g., Frontend developer specializing in motion UI" />
-      <Input label="What makes you different?" value={formData.superpower} onChange={(v: string) => update('superpower', v)} placeholder="e.g., I combine design sense with deep technical knowledge" />
+      {/* Sheet panel enclosing inputs */}
+      <motion.div variants={childVariants} className="p-1.5 rounded-3xl bg-white/[0.02] border border-white/[0.04] shadow-[0_12px_40px_rgba(0,0,0,0.5)]">
+        <div className="p-6 md:p-8 rounded-[calc(1.5rem+4px)] bg-[#0c0c10]/40 shadow-[inset_0_1px_0_rgba(255,255,255,0.03)] space-y-6">
+          <div className="grid grid-cols-2 gap-4">
+            <Input label="Name" value={formData.name} onChange={(v: string) => update('name', v)} placeholder="Jane Doe" />
+            <Input label="Timezone" value={formData.timezone} onChange={(v: string) => update('timezone', v)} placeholder="UTC+1" />
+          </div>
+          <Input label="What do you do?" value={formData.niche} onChange={(v: string) => update('niche', v)} placeholder="e.g., Frontend developer specializing in motion UI" />
+          <Input label="What makes you different?" value={formData.superpower} onChange={(v: string) => update('superpower', v)} placeholder="e.g., I combine design sense with deep technical knowledge" />
 
-      <div>
-        <label className="block text-[13px] font-medium text-muted-foreground mb-2.5 tracking-tight">Primary goal</label>
-        <div className="grid grid-cols-2 gap-3">
-          {GOALS.map(g => {
-            const Icon = GOAL_ICONS[g] || Target
-            const selected = formData.primary_goal === g
-            return (
-              <button
-                key={g}
-                onClick={() => update('primary_goal', g)}
-                className={`group flex items-center gap-3 px-3.5 py-3 rounded-xl ring-1
-                  transition-all duration-500 active:scale-[0.98] ${selected
-                    ? 'bg-accent/10 ring-accent/30 text-foreground'
-                    : 'bg-white/[0.02] ring-white/[0.06] text-muted-foreground hover:bg-white/[0.04] hover:text-foreground hover:ring-white/[0.1]'}`}
-                style={{ transitionTimingFunction: EASE }}
-              >
-                <div className={`w-8 h-8 rounded-lg flex items-center justify-center transition-colors duration-500
-                  ${selected ? 'bg-accent/20 text-accent' : 'bg-white/[0.04] text-muted-foreground group-hover:text-foreground'}`}
-                  style={{ transitionTimingFunction: EASE }}
-                >
-                  <Icon strokeWidth={1.5} className="size-4" />
-                </div>
-                <span className="text-[13px] font-medium tracking-tight">{g}</span>
-              </button>
-            )
-          })}
+          {/* Primary goal grid */}
+          <div className="space-y-3">
+            <label className="block text-[10px] uppercase tracking-[0.16em] text-zinc-500 font-bold ml-1">Primary goal</label>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3 relative">
+              {GOALS.map(g => {
+                const Icon = GOAL_ICONS[g] || Target
+                const selected = formData.primary_goal === g
+                return (
+                  <motion.button
+                    key={g}
+                    onClick={() => update('primary_goal', g)}
+                    whileHover={{ scale: 1.01 }}
+                    whileTap={{ scale: 0.98 }}
+                    className={cn(
+                      "group relative flex items-center gap-3.5 p-3 rounded-xl border transition-colors text-left",
+                      selected 
+                        ? "text-white border-transparent" 
+                        : "bg-white/[0.01] hover:bg-white/[0.02] border-white/[0.04] hover:border-white/[0.08] text-zinc-400 hover:text-white"
+                    )}
+                  >
+                    {selected && (
+                      <motion.span 
+                        layoutId="selectedGoalBackdrop"
+                        className="absolute inset-0 rounded-xl bg-white/[0.04] border border-white/[0.03] shadow-sm z-0"
+                        transition={springTransition}
+                      />
+                    )}
+                    <div className={cn(
+                      "w-8.5 h-8.5 rounded-lg flex items-center justify-center shrink-0 transition-colors z-10",
+                      selected ? 'bg-blue-500/10 border border-blue-500/20 text-blue-400' : 'bg-white/[0.02] text-zinc-500 group-hover:text-zinc-300'
+                    )}>
+                      <Icon strokeWidth={2} className="size-4" />
+                    </div>
+                    <span className="text-[13px] font-semibold tracking-tight relative z-10">{g}</span>
+                  </motion.button>
+                )
+              })}
+            </div>
+          </div>
+
+          <Textarea label="Describe your voice" value={formData.voice_description} onChange={(v: string) => update('voice_description', v)} placeholder="e.g., Casual but technical. I explain complex things simply." />
         </div>
-      </div>
+      </motion.div>
 
-      <Textarea label="Describe your voice" value={formData.voice_description} onChange={(v: string) => update('voice_description', v)} placeholder="e.g., Casual but technical. I explain complex things simply." />
-
-      <PrimaryButton onClick={onNext} disabled={!formData.name || !formData.niche} className="w-full bg-foreground text-background py-3.5">
-        Continue
-      </PrimaryButton>
+      <motion.div variants={childVariants} className="pt-2">
+        <PrimaryButton onClick={onNext} disabled={!formData.name || !formData.niche} className="w-full bg-white text-zinc-950 py-4 px-6 shadow-md justify-between">
+          Continue
+        </PrimaryButton>
+      </motion.div>
     </div>
   )
 }
 
 function StepPlatforms({ formData, update, onBack, onNext }: any) {
   return (
-    <div className="space-y-7">
-      <div>
-        <h1 className="text-[28px] font-semibold text-foreground tracking-tight leading-tight">Connect your platforms</h1>
-        <p className="text-muted-foreground mt-2 text-[14px] leading-relaxed">Enter your handles. The AI will investigate these during onboarding.</p>
-      </div>
+    <div className="space-y-10">
+      <motion.div variants={childVariants}>
+        <h1 className="text-3xl font-bold text-white tracking-tight leading-none">Connect your platforms</h1>
+        <p className="text-zinc-500 mt-2 text-sm font-semibold">Enter your handles. The AI will investigate these during onboarding.</p>
+      </motion.div>
 
-      {/* Twitter field with brand icon */}
-      <div>
-        <label className="block text-[13px] font-medium text-muted-foreground mb-2 tracking-tight">X / Twitter handle</label>
-        <div
-          className="rounded-2xl bg-white/[0.02] ring-1 ring-white/[0.06] transition-all duration-500 focus-within:ring-white/[0.15] focus-within:bg-white/[0.035] flex items-center"
-          style={{ transitionTimingFunction: EASE }}
-        >
-          <div className="pl-4 pr-2 py-3 flex items-center gap-2.5">
-            <XLogo className="size-4 text-muted-foreground/60" />
-            <span className="text-sm text-muted-foreground/40">{'@'}</span>
+      {/* Sheet panel enclosing inputs */}
+      <motion.div variants={childVariants} className="p-1.5 rounded-3xl bg-white/[0.02] border border-white/[0.04] shadow-[0_12px_40px_rgba(0,0,0,0.5)]">
+        <div className="p-6 md:p-8 rounded-[calc(1.5rem+4px)] bg-[#0c0c10]/40 shadow-[inset_0_1px_0_rgba(255,255,255,0.03)] space-y-6">
+          {/* Twitter field */}
+          <div className="space-y-2">
+            <label className="block text-[10px] uppercase tracking-[0.16em] text-zinc-500 font-bold block ml-1">X / Twitter handle</label>
+            <div className="relative flex items-center group">
+              <div className="pl-4 pr-1 py-3.5 flex items-center gap-1.5 absolute left-0 z-10">
+                <XLogo className="size-3.5 text-zinc-500 group-focus-within:text-blue-500/50 transition-colors" />
+                <span className="text-sm font-semibold text-zinc-700">@</span>
+              </div>
+              <input
+                value={formData.twitter_handle || ''}
+                onChange={(e) => update('twitter_handle', e.target.value.replace('@', ''))}
+                placeholder="yourhandle"
+                className="w-full bg-[#040406]/50 hover:bg-[#040406]/80 focus:bg-black/90 border border-white/[0.05] hover:border-white/[0.08] focus:border-blue-500/40 rounded-xl pl-16 pr-4 py-4 text-sm font-mono text-white placeholder:text-zinc-700 outline-none focus:outline-none transition-all shadow-[inset_0_1.5px_3px_rgba(0,0,0,0.9)] focus:ring-1 focus:ring-blue-500/10"
+              />
+            </div>
           </div>
-          <input
-            value={formData.twitter_handle || ''}
-            onChange={(e) => update('twitter_handle', e.target.value.replace('@', ''))}
-            placeholder="yourhandle"
-            className="w-full bg-transparent pr-4 py-3 text-sm text-foreground placeholder:text-muted-foreground/40 outline-none"
-          />
-        </div>
-      </div>
 
-      {/* Reddit field with brand icon */}
-      <div>
-        <label className="block text-[13px] font-medium text-muted-foreground mb-2 tracking-tight">Reddit username</label>
-        <div
-          className="rounded-2xl bg-white/[0.02] ring-1 ring-white/[0.06] transition-all duration-500 focus-within:ring-white/[0.15] focus-within:bg-white/[0.035] flex items-center"
-          style={{ transitionTimingFunction: EASE }}
-        >
-          <div className="pl-4 pr-2 py-3 flex items-center gap-2.5">
-            <RedditLogo className="size-4 text-muted-foreground/60" />
-            <span className="text-sm text-muted-foreground/40">{'u/'}</span>
+          {/* Reddit field */}
+          <div className="space-y-2">
+            <label className="block text-[10px] uppercase tracking-[0.16em] text-zinc-500 font-bold block ml-1">Reddit username</label>
+            <div className="relative flex items-center group">
+              <div className="pl-4 pr-1 py-3.5 flex items-center gap-1.5 absolute left-0 z-10">
+                <RedditLogo className="size-3.5 text-zinc-500 group-focus-within:text-blue-500/50 transition-colors" />
+                <span className="text-sm font-semibold text-zinc-700">u/</span>
+              </div>
+              <input
+                value={formData.reddit_username || ''}
+                onChange={(e) => update('reddit_username', e.target.value)}
+                placeholder="yourusername"
+                className="w-full bg-[#040406]/50 hover:bg-[#040406]/80 focus:bg-black/90 border border-white/[0.05] hover:border-white/[0.08] focus:border-blue-500/40 rounded-xl pl-16 pr-4 py-4 text-sm font-mono text-white placeholder:text-zinc-700 outline-none focus:outline-none transition-all shadow-[inset_0_1.5px_3px_rgba(0,0,0,0.9)] focus:ring-1 focus:ring-blue-500/10"
+              />
+            </div>
           </div>
-          <input
-            value={formData.reddit_username || ''}
-            onChange={(e) => update('reddit_username', e.target.value)}
-            placeholder="yourusername"
-            className="w-full bg-transparent pr-4 py-3 text-sm text-foreground placeholder:text-muted-foreground/40 outline-none"
-          />
+
+          <Input label="Target audience" value={formData.target_audience} onChange={(v: string) => update('target_audience', v)} placeholder="e.g., Startup founders, indie developers" />
+
+          <div className="flex items-center gap-2 text-[11px] text-zinc-500 leading-relaxed ml-1 font-semibold">
+            <Check className="size-3.5 text-zinc-600 shrink-0 stroke-[2.5]" />
+            <span>Make sure you're logged into x.com and reddit.com in your browser.</span>
+          </div>
         </div>
-      </div>
+      </motion.div>
 
-      <Input label="Target audience" value={formData.target_audience} onChange={(v: string) => update('target_audience', v)} placeholder="e.g., Startup founders, indie developers" />
-
-      <div className="flex items-center gap-2 text-[12px] text-muted-foreground/50 leading-relaxed">
-        <Check className="size-3.5 text-muted-foreground/40 shrink-0" strokeWidth={2} />
-        <span>Make sure you're logged into x.com and reddit.com in your browser.</span>
-      </div>
-
-      <div className="flex items-center gap-3 pt-1">
-        <button
+      <motion.div variants={childVariants} className="flex items-center gap-3 pt-1">
+        <motion.button
           onClick={onBack}
-          className="flex items-center gap-2 px-5 py-3 rounded-full text-sm text-muted-foreground hover:text-foreground transition-all duration-500 active:scale-[0.98]"
-          style={{ transitionTimingFunction: EASE }}
+          whileTap={{ scale: 0.98 }}
+          className="flex items-center gap-2 px-6 py-3.5 rounded-full text-sm font-bold text-zinc-500 hover:text-white transition-colors"
         >
           Back
-        </button>
-        <PrimaryButton onClick={onNext} disabled={!formData.twitter_handle && !formData.reddit_username} className="flex-1 bg-foreground text-background py-3.5">
+        </motion.button>
+        <PrimaryButton onClick={onNext} disabled={!formData.twitter_handle && !formData.reddit_username} className="flex-1 bg-white text-zinc-950 py-4 px-6 shadow-md justify-between">
           Start AI Onboarding
         </PrimaryButton>
-      </div>
+      </motion.div>
     </div>
   )
 }
 
 function StepApiKey({ formData, update, onBack, onNext }: any) {
-  const [primaryApiKey, setPrimaryApiKey] = useState(formData.gemini_api_key || '')
-  const [extras, setExtras] = useState<Array<{ id?: number; value: string }>>([])
+  const [activeTab, setActiveTab] = useState<'google' | 'zhipu'>('google')
+  const [primaryGoogleKey, setPrimaryGoogleKey] = useState(formData.gemini_api_key || '')
+  const [primaryZhipuKey, setPrimaryZhipuKey] = useState(formData.zai_api_key || '')
+  const [googleExtras, setGoogleExtras] = useState<Array<{ id?: number; value: string }>>([])
+  const [zhipuExtras, setZhipuExtras] = useState<Array<{ id?: number; value: string }>>([])
+  const [codingPlan, setCodingPlan] = useState(formData.zai_coding_plan === 1)
   const [saving, setSaving] = useState(false)
 
   useEffect(() => {
-    window.api.getApiKeys().then((keys: any[]) => {
-      setExtras((keys || []).filter(k => k.name !== 'Primary').map(k => ({ id: k.id, value: k.api_key })))
+    window.api.getApiKeys('google').then((keys: any[]) => {
+      setGoogleExtras((keys || []).filter(k => k.name !== 'Primary').map(k => ({ id: k.id, value: k.api_key })))
+    })
+    window.api.getApiKeys('zhipu').then((keys: any[]) => {
+      setZhipuExtras((keys || []).filter(k => k.name !== 'Primary').map(k => ({ id: k.id, value: k.api_key })))
     })
   }, [])
-
-  const updateExtra = (i: number, value: string) =>
-    setExtras(prev => prev.map((k, idx) => idx === i ? { ...k, value } : k))
-  const addExtra = () => setExtras(prev => [...prev, { value: '' }])
-  const removeExtra = (i: number) => setExtras(prev => prev.filter((_, idx) => idx !== i))
 
   const handleContinue = async () => {
     setSaving(true)
     try {
-      if (primaryApiKey.trim()) {
-        await window.api.updateProfile({ gemini_api_key: primaryApiKey.trim() })
+      await window.api.updateProfile({
+        gemini_api_key: primaryGoogleKey.trim(),
+        zai_api_key: primaryZhipuKey.trim(),
+        zai_coding_plan: codingPlan ? 1 : 0,
+      })
+
+      // Persist Google backup keys
+      const existingGoogle = ((await window.api.getApiKeys('google')) as any[]).filter(k => k.name !== 'Primary')
+      const keptGoogleIds = new Set(googleExtras.filter(e => e.id).map(e => e.id))
+      for (const k of existingGoogle) {
+        if (!keptGoogleIds.has(k.id)) await window.api.removeApiKey(k.id)
       }
-      // diff-persist extras: remove dropped, add new
-      const existing = ((await window.api.getApiKeys()) as any[]).filter(k => k.name !== 'Primary')
-      const keptIds = new Set(extras.filter(e => e.id).map(e => e.id))
-      for (const k of existing) {
-        if (!keptIds.has(k.id)) await window.api.removeApiKey(k.id)
+      for (const e of googleExtras) {
+        if (!e.id && e.value.trim()) await window.api.addApiKey(e.value.trim(), 'google')
       }
-      for (const e of extras) {
-        if (!e.id && e.value.trim()) await window.api.addApiKey(e.value.trim())
+
+      // Persist Zhipu backup keys
+      const existingZhipu = ((await window.api.getApiKeys('zhipu')) as any[]).filter(k => k.name !== 'Primary')
+      const keptZhipuIds = new Set(zhipuExtras.filter(e => e.id).map(e => e.id))
+      for (const k of existingZhipu) {
+        if (!keptZhipuIds.has(k.id)) await window.api.removeApiKey(k.id)
       }
-      update('gemini_api_key', primaryApiKey.trim())
+      for (const e of zhipuExtras) {
+        if (!e.id && e.value.trim()) await window.api.addApiKey(e.value.trim(), 'zhipu')
+      }
+
+      update('gemini_api_key', primaryGoogleKey.trim())
+      update('zai_api_key', primaryZhipuKey.trim())
+      update('zai_coding_plan', codingPlan ? 1 : 0)
       onNext()
     } catch (err) {
       console.error('Failed to save API keys:', err)
@@ -366,72 +446,194 @@ function StepApiKey({ formData, update, onBack, onNext }: any) {
     }
   }
 
-  const hasAnyKey = primaryApiKey.trim() || extras.some(e => e.value.trim())
+  const hasAnyKey = primaryGoogleKey.trim() || primaryZhipuKey.trim() || googleExtras.some(e => e.value.trim()) || zhipuExtras.some(e => e.value.trim())
 
   return (
-    <div className="space-y-7">
-      <div>
-        <h1 className="text-[28px] font-semibold text-foreground tracking-tight leading-tight">Add your AI Studio keys</h1>
-        <p className="text-muted-foreground mt-2 text-[14px] leading-relaxed">
-          Soxial uses your Google AI Studio keys for chat and onboarding. Add multiple keys to increase your rate limits.
+    <div className="space-y-10">
+      <motion.div variants={childVariants}>
+        <h1 className="text-3xl font-bold text-white tracking-tight leading-none">Credentials</h1>
+        <p className="text-zinc-500 mt-2 text-sm font-semibold">
+          Configure Google AI Studio or Z.AI (Zhipu) API access credentials to authenticate agent actions.
         </p>
-      </div>
+      </motion.div>
 
-      <div className="space-y-4">
-        <Input
-          label="Primary API key"
-          value={primaryApiKey}
-          onChange={(v: string) => setPrimaryApiKey(v.trim())}
-          placeholder="AIza..."
-          type="password"
-          hint="Create one at aistudio.google.com"
-        />
-
-        {extras.map((k, i) => (
-          <div key={k.id ?? `new-${i}`} className="flex gap-2">
-            <div
-              className="flex-1 rounded-2xl bg-white/[0.02] ring-1 ring-white/[0.06] transition-all duration-500 focus-within:ring-white/[0.15] focus-within:bg-white/[0.035]"
-              style={{ transitionTimingFunction: EASE }}
-            >
-              <input
-                type="password"
-                value={k.value}
-                onChange={(e) => updateExtra(i, e.target.value)}
-                placeholder="AIza..."
-                className="w-full bg-transparent px-4 py-3 text-sm text-foreground placeholder:text-muted-foreground/40 outline-none"
-              />
-            </div>
+      {/* Sheet panel enclosing inputs */}
+      <motion.div variants={childVariants} className="p-1.5 rounded-3xl bg-white/[0.02] border border-white/[0.04] shadow-[0_12px_40px_rgba(0,0,0,0.5)]">
+        <div className="p-6 md:p-8 rounded-[calc(1.5rem+4px)] bg-[#0c0c10]/40 shadow-[inset_0_1px_0_rgba(255,255,255,0.03)] space-y-6">
+          {/* Sliding Tab Selector */}
+          <div className="p-0.5 rounded-xl bg-white/[0.02] border border-white/[0.04] flex max-w-[240px] relative">
             <button
-              onClick={() => removeExtra(i)}
-              aria-label="Remove key"
-              className="px-3 rounded-2xl text-muted-foreground/40 hover:text-foreground hover:bg-white/[0.03] transition-colors"
+              onClick={() => setActiveTab('google')}
+              className={cn(
+                "flex-1 py-1.5 text-[10px] uppercase tracking-wider font-bold rounded-lg transition-colors duration-300 relative z-10",
+                activeTab === 'google' ? "text-white" : "text-zinc-500 hover:text-zinc-300"
+              )}
             >
-              <Trash2 className="size-4" />
+              {activeTab === 'google' && (
+                <motion.span 
+                  layoutId="activeTabBackdropOnboarding"
+                  className="absolute inset-0 rounded-lg bg-white/[0.04] border border-white/[0.03] shadow-sm"
+                  transition={springTransition}
+                />
+              )}
+              Google
+            </button>
+            <button
+              onClick={() => setActiveTab('zhipu')}
+              className={cn(
+                "flex-1 py-1.5 text-[10px] uppercase tracking-wider font-bold rounded-lg transition-colors duration-300 relative z-10",
+                activeTab === 'zhipu' ? "text-white" : "text-zinc-500 hover:text-zinc-300"
+              )}
+            >
+              {activeTab === 'zhipu' && (
+                <motion.span 
+                  layoutId="activeTabBackdropOnboarding"
+                  className="absolute inset-0 rounded-lg bg-white/[0.04] border border-white/[0.03] shadow-sm"
+                  transition={springTransition}
+                />
+              )}
+              Z.AI
             </button>
           </div>
-        ))}
 
-        <button
-          onClick={addExtra}
-          className="flex items-center gap-1.5 text-xs text-muted-foreground/60 hover:text-foreground transition-colors"
-        >
-          <Plus className="size-3.5" />
-          Add more API key
-        </button>
-      </div>
+          <div className="min-h-[220px]">
+            <AnimatePresence mode="wait">
+              {activeTab === 'google' ? (
+                <motion.div 
+                  key="google"
+                  initial={{ opacity: 0, y: 6 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -6 }}
+                  transition={{ duration: 0.2 }}
+                  className="space-y-4"
+                >
+                  <Input
+                    label="Primary Google API key"
+                    value={primaryGoogleKey}
+                    onChange={(v: string) => setPrimaryGoogleKey(v.trim())}
+                    placeholder="AIza..."
+                    type="password"
+                    hint="Create one at aistudio.google.com"
+                    icon={KeyRound}
+                  />
+                  {googleExtras.map((k, i) => (
+                    <div key={k.id ?? `new-g-${i}`} className="flex gap-2 items-end">
+                      <div className="flex-1">
+                        <Input
+                          label="Backup API key"
+                          value={k.value}
+                          onChange={(v: string) => setGoogleExtras(prev => prev.map((item, idx) => idx === i ? { ...item, value: v } : item))}
+                          placeholder="AIza..."
+                          type="password"
+                          icon={KeyRound}
+                        />
+                      </div>
+                      <button
+                        onClick={() => setGoogleExtras(prev => prev.filter((_, idx) => idx !== i))}
+                        aria-label="Remove key"
+                        className="flex items-center justify-center w-12 h-[51px] rounded-xl bg-white/[0.01] hover:bg-white/[0.02] border border-white/[0.04] hover:border-red-500/20 hover:bg-red-500/10 text-zinc-600 hover:text-red-400 transition-colors shrink-0 shadow-sm"
+                      >
+                        <Trash2 className="size-4" />
+                      </button>
+                    </div>
+                  ))}
+                  <button
+                    onClick={() => setGoogleExtras(prev => [...prev, { value: '' }])}
+                    className="flex items-center gap-1.5 text-xs text-zinc-500 hover:text-white transition-colors font-semibold ml-1 mt-1"
+                  >
+                    <Plus className="size-3.5" /> Add backup Google key
+                  </button>
+                </motion.div>
+              ) : (
+                <motion.div 
+                  key="zhipu"
+                  initial={{ opacity: 0, y: 6 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -6 }}
+                  transition={{ duration: 0.2 }}
+                  className="space-y-6"
+                >
+                  <Input
+                    label="Primary Z.AI API key"
+                    value={primaryZhipuKey}
+                    onChange={(v: string) => setPrimaryZhipuKey(v.trim())}
+                    placeholder="Z.AI api key..."
+                    type="password"
+                    hint="Create one on bigmodel.cn or docs.z.ai"
+                    icon={KeyRound}
+                  />
 
-      <div className="flex items-center gap-3 pt-1">
-        <button
+                  {/* Coding Plan Mode */}
+                  <div className="flex items-center justify-between p-5 rounded-2xl bg-white/[0.01] hover:bg-white/[0.02] border border-white/[0.04] shadow-sm transition-colors">
+                    <div>
+                      <div className="text-xs font-semibold text-white tracking-tight">Coding Plan Mode</div>
+                      <div className="text-[10px] text-zinc-500 font-medium mt-0.5">Toggle to use dedicated coding endpoint: https://api.z.ai/api/coding/paas/v4</div>
+                    </div>
+                    {/* Apple style physical switch */}
+                    <button
+                      onClick={() => setCodingPlan(!codingPlan)}
+                      className={cn(
+                        "w-11 h-6 rounded-full relative p-0.5 transition-colors duration-300 flex items-center border shadow-[inset_0_1px_2px_rgba(0,0,0,0.4)]",
+                        codingPlan 
+                          ? "bg-blue-600 border-blue-500/10" 
+                          : "bg-[#0c0c0f] border-white/[0.04]"
+                      )}
+                    >
+                      <motion.span 
+                        layout
+                        transition={toggleSpring}
+                        className="size-5 rounded-full bg-white shadow-md block" 
+                        style={{ marginLeft: codingPlan ? 'auto' : '0px' }}
+                      />
+                    </button>
+                  </div>
+
+                  {zhipuExtras.map((k, i) => (
+                    <div key={k.id ?? `new-z-${i}`} className="flex gap-2 items-end">
+                      <div className="flex-1">
+                        <Input
+                          label="Backup API key"
+                          value={k.value}
+                          onChange={(v: string) => setZhipuExtras(prev => prev.map((item, idx) => idx === i ? { ...item, value: v } : item))}
+                          placeholder="Z.AI backup api key..."
+                          type="password"
+                          icon={KeyRound}
+                        />
+                      </div>
+                      <button
+                        onClick={() => setZhipuExtras(prev => prev.filter((_, idx) => idx !== i))}
+                        aria-label="Remove key"
+                        className="flex items-center justify-center w-12 h-[51px] rounded-xl bg-white/[0.01] hover:bg-white/[0.02] border border-white/[0.04] hover:border-red-500/20 hover:bg-red-500/10 text-zinc-600 hover:text-red-400 transition-colors shrink-0 shadow-sm"
+                      >
+                        <Trash2 className="size-4" />
+                      </button>
+                    </div>
+                  ))}
+                  <button
+                    onClick={() => setZhipuExtras(prev => [...prev, { value: '' }])}
+                    className="flex items-center gap-1.5 text-xs text-zinc-500 hover:text-white transition-colors font-semibold ml-1 mt-1"
+                  >
+                    <Plus className="size-3.5" /> Add backup Z.AI key
+                  </button>
+                </motion.div>
+              )}
+            </AnimatePresence>
+          </div>
+        </div>
+      </motion.div>
+
+      <motion.div variants={childVariants} className="flex items-center gap-3 pt-1">
+        <motion.button
           onClick={onBack}
-          className="flex items-center gap-2 px-5 py-3 rounded-full text-sm text-muted-foreground hover:text-foreground transition-all duration-500 active:scale-[0.98]"
-          style={{ transitionTimingFunction: EASE }}
+          whileTap={{ scale: 0.98 }}
+          className="flex items-center gap-2 px-6 py-3.5 rounded-full text-sm font-bold text-zinc-500 hover:text-white transition-colors"
         >
           Back
-        </button>
-        <PrimaryButton onClick={handleContinue} disabled={!hasAnyKey || saving} className="flex-1 bg-foreground text-background py-3.5">
+        </motion.button>
+        <PrimaryButton onClick={handleContinue} disabled={!hasAnyKey || saving} className="flex-1 bg-white text-zinc-950 py-4 px-6 shadow-md justify-between">
           {saving ? 'Saving...' : 'Continue'}
         </PrimaryButton>
-      </div>
+      </motion.div>
     </div>
   )
 }
@@ -578,7 +780,7 @@ function StepAiOnboarding({ formData, onComplete, onBack }: { formData: any; onC
       .then(result => {
         if (!mountedRef.current) return
         setStreaming(false)
-        if (result?.success) {
+         if (result?.success) {
           commitStreamingMessage()
           setComplete(true)
         } else if (result?.aborted) {
@@ -847,7 +1049,7 @@ function StepAiOnboarding({ formData, onComplete, onBack }: { formData: any; onC
       </Conversation>
 
       <div
-        className="absolute bottom-0 left-0 px-4 pb-6 bg-gradient-to-t from-background via-background/95 to-transparent pointer-events-none"
+        className="absolute bottom-0 left-0 px-4 pb-6 bg-gradient-to-t from-[#050507] via-[#050507]/95 to-transparent pointer-events-none"
         style={{
           right: scrollbarW,
           paddingTop: Math.max(32, Math.round(inputAreaHeight * 0.25) || 48),
@@ -855,8 +1057,7 @@ function StepAiOnboarding({ formData, onComplete, onBack }: { formData: any; onC
       >
         <div ref={setInputEl} className="max-w-3xl mx-auto flex justify-center">
           {pendingAuth ? (
-            <div className="w-full max-w-md rounded-2xl px-5 py-4 pointer-events-auto animate-in fade-in slide-in-from-bottom-2 duration-500"
-                 style={{ animationTimingFunction: EASE, background: 'rgba(255,255,255,0.02)', boxShadow: 'inset 0 0 0 1px rgba(255,255,255,0.08)' }}>
+            <div className="w-full max-w-md rounded-2xl px-5 py-4 pointer-events-auto animate-in fade-in slide-in-from-bottom-2 duration-500 bg-[#0c0c10]/40 border border-white/[0.04] shadow-2xl backdrop-blur-xl">
               {(() => {
                 const need = [pendingAuth.twitter.needed && 'X', pendingAuth.reddit.needed && 'Reddit'].filter(Boolean) as string[]
                 const fail = [
@@ -865,31 +1066,30 @@ function StepAiOnboarding({ formData, onComplete, onBack }: { formData: any; onC
                 ].filter(Boolean) as string[]
                 return (
                   <>
-                    <div className="text-sm text-foreground/90 leading-relaxed">
+                    <div className="text-sm text-white/90 leading-relaxed font-semibold">
                       Log into {need.join(' and ')} in your browser, then confirm below so Soxial can connect.
                     </div>
                     <div className="mt-2 flex flex-wrap gap-2">
                       {fail.map((f) => (
-                        <span key={f} className="inline-flex items-center gap-1.5 text-[11px] text-amber-500/90 px-2 py-1 rounded-sm bg-amber-500/10">
+                        <span key={f} className="inline-flex items-center gap-1.5 text-[11px] text-amber-400 px-2 py-1 rounded-lg bg-amber-500/10 border border-amber-500/10 font-semibold shadow-sm">
                           <ShieldAlert className="size-3" /> {f}
                         </span>
                       ))}
                     </div>
-                    <div className="mt-4 flex items-center gap-3">
+                    <div className="mt-5 flex items-center gap-3">
                       <button
                         onClick={() => { window.api.retryOnboardingAuth(pendingAuth.id, false); setPendingAuth(null); onBack() }}
-                        className="px-4 py-2.5 rounded-full text-sm text-muted-foreground hover:text-foreground transition-colors"
+                        className="px-5 py-2.5 rounded-full text-xs font-bold text-zinc-500 hover:text-white transition-colors"
                       >
                         Back
                       </button>
                       <button
                         onClick={() => { window.api.retryOnboardingAuth(pendingAuth.id, true); setPendingAuth(null) }}
-                        className="group flex items-center gap-2 px-4 py-2.5 rounded-full bg-foreground text-background text-sm font-semibold transition-all active:scale-[0.98] hover:opacity-90"
-                        style={{ transitionTimingFunction: EASE }}
+                        className="group flex items-center gap-2 px-5 py-2.5 rounded-full bg-white text-zinc-950 text-xs font-bold transition-transform active:scale-[0.96] hover:bg-zinc-100 shadow-lg"
                       >
                         Logged in
-                        <span className="w-5 h-5 rounded-full bg-primary-foreground/15 flex items-center justify-center">
-                          <ArrowRight className="size-3" strokeWidth={2} />
+                        <span className="w-5 h-5 rounded-full bg-zinc-900/15 flex items-center justify-center">
+                          <ArrowRight className="size-3 stroke-[2.5]" />
                         </span>
                       </button>
                     </div>
@@ -899,37 +1099,31 @@ function StepAiOnboarding({ formData, onComplete, onBack }: { formData: any; onC
             </div>
           ) : error ? (
             <div
-              className="flex items-center justify-between gap-3 w-full max-w-md rounded-2xl px-4 py-3 pointer-events-auto animate-in fade-in slide-in-from-bottom-2 duration-500"
-              style={{ animationTimingFunction: EASE, background: 'rgba(239,68,68,0.04)', boxShadow: 'inset 0 0 0 1px rgba(239,68,68,0.15)' }}
+              className="flex items-center justify-between gap-3 w-full max-w-md rounded-2xl px-5 py-3 pointer-events-auto animate-in fade-in slide-in-from-bottom-2 duration-500 bg-red-500/5 border border-red-500/10 shadow-2xl backdrop-blur-xl"
             >
-              <div className="flex items-center gap-2.5 text-destructive text-xs min-w-0">
-                <ShieldAlert className="size-4 shrink-0" strokeWidth={1.5} />
+              <div className="flex items-center gap-2.5 text-red-400 text-xs min-w-0 font-semibold">
+                <ShieldAlert className="size-4 shrink-0 stroke-[2]" />
                 <span className="truncate">{error}</span>
               </div>
               <button
                 onClick={retryOnboarding}
-                className="group flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-primary text-primary-foreground text-xs font-medium hover:opacity-90 transition-all duration-500 active:scale-[0.96] shrink-0"
-                style={{ transitionTimingFunction: EASE }}
+                className="group flex items-center gap-2 px-4 py-2 rounded-full bg-white text-zinc-950 text-xs font-bold hover:bg-zinc-100 transition-transform active:scale-[0.96] shrink-0 shadow-lg"
               >
-                <RefreshCw className="size-3" strokeWidth={2} /> Retry
+                <RefreshCw className="size-3 stroke-[2.5]" /> Retry
               </button>
             </div>
           ) : complete ? (
             hasNextAction ? (
-              <div className="flex items-center gap-3 pointer-events-auto animate-in fade-in zoom-in-95 duration-500" style={{ animationTimingFunction: EASE }}>
+              <div className="flex items-center gap-3 pointer-events-auto animate-in fade-in zoom-in-95 duration-500">
                 <button
                   onClick={() => onComplete()}
-                  className="flex items-center gap-2 px-5 py-3 rounded-full text-sm text-muted-foreground hover:text-foreground transition-all duration-500 active:scale-[0.98]"
-                  style={{ transitionTimingFunction: EASE }}
+                  className="flex items-center gap-2 px-5 py-3 rounded-full text-xs font-bold text-zinc-500 hover:text-white transition-colors"
                 >
                   Skip to Dashboard
                 </button>
                 <button
                   onClick={async () => {
                     try {
-                      // Strip tool call history — empty messages (silent tool calls) removed,
-                      // steps dropped. Prevents chat agent from seeing onboarding-only tools
-                      // (ask_user_questions, save_hook, etc.) and massive tool results that cause hallucinations.
                       const stripped = messages
                         .filter(m => m.content.trim())
                         .map(m => ({ role: m.role, content: m.content }))
@@ -939,30 +1133,22 @@ function StepAiOnboarding({ formData, onComplete, onBack }: { formData: any; onC
                       onComplete()
                     }
                   }}
-                  className="group flex items-center gap-3 px-5 py-3 rounded-full bg-primary text-primary-foreground text-sm font-semibold transition-all active:scale-[0.98] hover:opacity-90"
-                  style={{ transitionTimingFunction: EASE }}
+                  className="group flex items-center gap-3 px-5 py-3 rounded-full bg-white text-zinc-950 text-xs font-bold transition-transform active:scale-[0.96] hover:bg-zinc-100 shadow-lg"
                 >
                   <span>Review Next Action</span>
-                  <span
-                    className="w-6 h-6 rounded-full bg-primary-foreground/15 flex items-center justify-center transition-transform duration-500 group-hover:translate-x-0.5"
-                    style={{ transitionTimingFunction: EASE }}
-                  >
-                    <ArrowRight className="size-3" strokeWidth={2} />
+                  <span className="w-5 h-5 rounded-full bg-zinc-900/15 flex items-center justify-center transition-transform group-hover:translate-x-0.5">
+                    <ArrowRight className="size-3 stroke-[2.5]" />
                   </span>
                 </button>
               </div>
             ) : (
               <button
                 onClick={() => onComplete()}
-                className="group flex items-center gap-3 px-5 py-3 rounded-full bg-primary text-primary-foreground text-sm font-semibold pointer-events-auto animate-in fade-in zoom-in-95 duration-500 transition-all active:scale-[0.98] hover:opacity-90"
-                style={{ transitionTimingFunction: EASE, animationTimingFunction: EASE }}
+                className="group flex items-center gap-3 px-5 py-3 rounded-full bg-white text-zinc-950 text-xs font-bold pointer-events-auto animate-in fade-in zoom-in-95 duration-500 transition-transform active:scale-[0.96] hover:bg-zinc-100 shadow-lg"
               >
                 <span>Continue to Dashboard</span>
-                <span
-                  className="w-6 h-6 rounded-full bg-primary-foreground/15 flex items-center justify-center transition-transform duration-500 group-hover:translate-x-0.5"
-                  style={{ transitionTimingFunction: EASE }}
-                >
-                  <ArrowRight className="size-3" strokeWidth={2} />
+                <span className="w-5 h-5 rounded-full bg-zinc-900/15 flex items-center justify-center transition-transform group-hover:translate-x-0.5">
+                  <ArrowRight className="size-3 stroke-[2.5]" />
                 </span>
               </button>
             )

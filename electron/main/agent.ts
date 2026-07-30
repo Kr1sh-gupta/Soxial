@@ -1,6 +1,6 @@
 import { streamText, generateText as aiGenerateText, isStepCount } from 'ai'
 import { createGoogle } from '@ai-sdk/google'
-import { getProfile, getApiTier, getAvailableApiKeyForModel, markModelExhausted, isModelExhaustedForAllKeys, updateApiKeyLastUsed, getChatSessionSteps, updateChatSessionSteps } from './db'
+import { getProfile, getApiTier, getAvailableApiKeyForModel, markModelExhausted, isModelExhaustedForAllKeys, updateApiKeyLastUsed, getChatSessionSteps, updateChatSessionSteps, getDb } from './db'
 import { createTools } from './tools'
 import { logger } from './log'
 import { ipcMain } from 'electron'
@@ -12,6 +12,45 @@ export { ONBOARDING_SYSTEM_PROMPT } from './onboarding-system-prompt'
 const CHAT_MODEL = 'gemini-3.1-flash-lite'
 const TITLE_MODEL = 'gemma-4-31b-it'
 
+// ─── Title / Quick-action model selection ───────────────────────────────────
+// Rules:
+//   Both providers available:
+//     title = gemma-4-31b-it (Google priority)
+//     quick = GLM model (Z.AI priority)
+//   Google only (any tier):
+//     title = gemma-4-31b-it
+//     quick = gemini-3.1-flash-lite
+//   Z.AI coding plan:
+//     title = glm-4.5-air
+//     quick = glm-5-turbo
+//   Z.AI standard pro:
+//     title = glm-4.5-flash
+//     quick = glm-5-turbo
+//   Z.AI standard free:
+//     title = glm-4.5-flash
+//     quick = glm-4.7-flash
+
+export function getTitleModel(): string {
+  const db = getDb()
+  const hasGoogle = (db.prepare('SELECT COUNT(*) as count FROM api_keys WHERE provider = \'google\' AND is_active = 1').get() as any).count > 0
+  if (hasGoogle) return 'gemma-4-31b-it'
+
+  const profile = getProfile()
+  if (profile?.zai_coding_plan) return 'glm-4.5-air'
+  return 'glm-4.5-flash'
+}
+
+export function getQuickActionModel(): string {
+  const db = getDb()
+  const hasZhipu = (db.prepare('SELECT COUNT(*) as count FROM api_keys WHERE provider = \'zhipu\' AND is_active = 1').get() as any).count > 0
+  if (hasZhipu) {
+    const profile = getProfile()
+    if (profile?.zai_coding_plan) return 'glm-5-turbo'
+    return getApiTier().tier === 'pro' ? 'glm-5-turbo' : 'glm-4.7-flash'
+  }
+  return 'gemini-3.1-flash-lite'
+}
+
 const MODEL_LABELS: Record<string, string> = {
   'Gemini 3.5 Flash': 'gemini-3.5-flash',
   'gemini-3.5-flash': 'gemini-3.5-flash',
@@ -19,11 +58,37 @@ const MODEL_LABELS: Record<string, string> = {
   'gemini-3.1-pro': 'gemini-3.1-pro',
   'Gemini 3.1 Flash Lite': 'gemini-3.1-flash-lite',
   'gemini-3.1-flash-lite': CHAT_MODEL,
+  'GLM 5.2': 'glm-5.2',
+  'glm-5.2': 'glm-5.2',
+  'GLM 5 Turbo': 'glm-5-turbo',
+  'glm-5-turbo': 'glm-5-turbo',
+  'GLM 4.7 Flash': 'glm-4.7-flash',
+  'glm-4.7-flash': 'glm-4.7-flash',
+  'GLM 4.5 Flash': 'glm-4.5-flash',
+  'glm-4.5-flash': 'glm-4.5-flash',
 }
 
 export const ONBOARDING_MODEL_FALLBACK = ['gemini-3.5-flash', 'gemini-3.1-flash-lite']
 export const CHAT_MODEL_FALLBACK_PRO = ['gemini-3.5-flash', 'gemini-3.1-pro', 'gemini-3.1-flash-lite']
 export const CHAT_MODEL_FALLBACK_FREE = ['gemini-3.1-flash-lite', 'gemini-3.5-flash']
+
+// Dynamic onboarding fallback chain: prefers Google if present, falls back to Z.AI if only Zhipu keys exist.
+export function getOnboardingFallbackChain(): string[] {
+  const db = getDb()
+  const googleKeys = db.prepare('SELECT COUNT(*) as count FROM api_keys WHERE provider = \'google\' AND is_active = 1').get() as any
+  const zhipuKeys = db.prepare('SELECT COUNT(*) as count FROM api_keys WHERE provider = \'zhipu\' AND is_active = 1').get() as any
+
+  const hasGoogle = googleKeys.count > 0
+  const hasZhipu = zhipuKeys.count > 0
+
+  if (hasGoogle && hasZhipu) {
+    return ['gemini-3.5-flash', 'glm-4.7-flash', 'glm-4.5-flash', 'gemini-3.1-flash-lite']
+  } else if (hasZhipu) {
+    return ['glm-4.7-flash', 'glm-4.5-flash']
+  } else {
+    return ['gemini-3.5-flash', 'gemini-3.1-flash-lite'] // Default Google only
+  }
+}
 
 const EFFORT_MAP: Record<string, string> = {
   Low: 'low',
@@ -54,9 +119,11 @@ export interface AgentConfig {
 
 export function getApiKey(model?: string, excludeApiKeyIds?: number[]): { apiKey: string; apiKeyId: number | null } {
   const profile = getProfile()
+  const provider = model?.startsWith('glm') ? 'zhipu' : 'google'
 
   if (model) {
-    const requiredTier = model === 'gemini-3.1-pro' ? 'pro' : undefined
+    const isProModel = model === 'gemini-3.1-pro' || model === 'glm-5.2' || model === 'glm-5-turbo'
+    const requiredTier = isProModel ? 'pro' : undefined
     const availableKey = getAvailableApiKeyForModel(model, requiredTier, excludeApiKeyIds)
     if (availableKey) {
       updateApiKeyLastUsed(availableKey.id)
@@ -67,12 +134,16 @@ export function getApiKey(model?: string, excludeApiKeyIds?: number[]): { apiKey
     }
   }
 
-  const apiKey = profile?.gemini_api_key || process.env.GEMINI_API_KEY
-  if (!apiKey)
+  const apiKey = provider === 'zhipu'
+    ? profile?.zai_api_key
+    : (profile?.gemini_api_key || process.env.GEMINI_API_KEY)
+
+  if (!apiKey) {
     throw new Error(
-      'No Google AI Studio API key configured. Set GEMINI_API_KEY in .env or add it during onboarding.',
+      `No API key configured for provider: ${provider === 'zhipu' ? 'Z.AI' : 'Google AI Studio'}. Please complete setup.`,
     )
-  logger.info('agent', `getApiKey: using fallback primary API key`)
+  }
+  logger.info('agent', `getApiKey: using fallback primary API key (${provider})`)
   return { apiKey, apiKeyId: null }
 }
 
@@ -88,7 +159,7 @@ export function getAgentConfig(options?: AgentOptions): AgentConfig {
   let modelId = options?.model ? MODEL_LABELS[options.model] : undefined
   if (!modelId) {
     for (const candidateModel of fallbackChain) {
-      const requiredTier = candidateModel === 'gemini-3.1-pro' ? 'pro' : undefined
+      const requiredTier = (candidateModel === 'gemini-3.1-pro' || candidateModel === 'glm-5.2' || candidateModel === 'glm-5-turbo') ? 'pro' : undefined
       if (!options?.skipRateLimitCheck && isModelExhaustedForAllKeys(candidateModel, requiredTier)) {
         logger.warn('agent', `model ${candidateModel} is exhausted for all ${requiredTier || 'eligible'} API keys, trying next in chain`)
         continue
@@ -513,11 +584,42 @@ export async function generateText(
   system?: string,
   options?: { model?: string },
 ): Promise<string> {
-  const { apiKey } = getAgentConfig({ model: options?.model })
-  const modelId = options?.model || TITLE_MODEL
+  const db = getDb()
+  const googleKeys = db.prepare('SELECT COUNT(*) as count FROM api_keys WHERE provider = \'google\' AND is_active = 1').get() as any
+  const hasGoogle = googleKeys.count > 0
+
+  let activeModel = options?.model
+  let provider: 'google' | 'zhipu' = 'google'
+
+  if (!activeModel) {
+    if (hasGoogle) {
+      activeModel = TITLE_MODEL
+    } else {
+      const globalTier = getApiTier().tier
+      activeModel = globalTier === 'pro' ? 'glm-5-turbo' : 'glm-4.7-flash'
+      provider = 'zhipu'
+    }
+  } else {
+    provider = activeModel.startsWith('glm') ? 'zhipu' : 'google'
+  }
+
+  const { apiKey } = getApiKey(activeModel)
+
   try {
+    let modelInstance: any
+    if (provider === 'zhipu') {
+      const { createZhipu } = await import('zhipu-ai-provider')
+      const profile = getProfile()
+      const baseURL = profile?.zai_coding_plan
+        ? 'https://api.z.ai/api/coding/paas/v4'
+        : 'https://api.z.ai/api/paas/v4'
+      modelInstance = createZhipu({ baseURL, apiKey })(activeModel as any)
+    } else {
+      modelInstance = createGoogle({ apiKey })(activeModel)
+    }
+
     const { text } = await aiGenerateText({
-      model: createGoogle({ apiKey })(modelId),
+      model: modelInstance,
       ...(system ? { system } : {}),
       messages: messages.map((m) => ({
         role: m.role === 'assistant' ? ('assistant' as const) : ('user' as const),
@@ -641,6 +743,7 @@ export async function runAgent(
   drainInjectedMessages?: () => AppMessage[],
   onInjectedMessages?: (messages: AppMessage[]) => void,
   sessionId?: number,
+  onModelSwitch?: (model: string) => void,
 ) {
   let fallbackChain = options?.fallbackChain || (getApiTier().tier === 'pro' ? CHAT_MODEL_FALLBACK_PRO : CHAT_MODEL_FALLBACK_FREE)
   // Respect user-selected model: move it to front of fallback chain
@@ -698,8 +801,9 @@ export async function runAgent(
     const currentModel = fallbackChain[i]
     options?.onModelSwitch?.(currentModel, i + 1, fallbackChain.length)
     logger.info('agent', `attempting with model: ${currentModel} (${i + 1}/${fallbackChain.length})`)
+    onModelSwitch?.(currentModel)
 
-    const requiredTier = currentModel === 'gemini-3.1-pro' ? 'pro' : undefined
+    const requiredTier = (currentModel === 'gemini-3.1-pro' || currentModel === 'glm-5.2' || currentModel === 'glm-5-turbo') ? 'pro' : undefined
     if (!options?.skipRateLimitCheck && isModelExhaustedForAllKeys(currentModel, requiredTier)) {
       logger.warn('agent', `model ${currentModel} exhausted for all keys, skipping`)
       continue
@@ -736,13 +840,28 @@ export async function runAgent(
 
       // Inner loop: on transient (high-demand / 5xx / network) errors, wait with backoff
       // and retry the SAME key+model up to MAX_TRANSIENT_RETRIES times before rotating.
+      // Counter resets when progress is made — only CONSECUTIVE no-progress failures count.
       while (true) {
         fullText = ''
         let result: any = null
+        const prevMsgCount = modelMessages.length
 
         try {
-          result = streamText({
-            model: createGoogle({ apiKey })(currentModel),
+          const isZhipu = currentModel.startsWith('glm')
+          let modelInstance: any
+          if (isZhipu) {
+            const { createZhipu } = await import('zhipu-ai-provider')
+            const profile = getProfile()
+            const baseURL = profile?.zai_coding_plan
+              ? 'https://api.z.ai/api/coding/paas/v4'
+              : 'https://api.z.ai/api/paas/v4'
+            modelInstance = createZhipu({ baseURL, apiKey })(currentModel as any)
+          } else {
+            modelInstance = createGoogle({ apiKey })(currentModel)
+          }
+
+          const runOptions: any = {
+            model: modelInstance,
             system,
             messages: modelMessages,
             tools: aiTools,
@@ -750,15 +869,26 @@ export async function runAgent(
             temperature: 0.3,
             maxOutputTokens: 8192,
             maxRetries: 0,
-            ...(abortController ? { abortSignal: abortController.signal } : {}),
-            providerOptions: {
+          }
+
+          if (abortController) {
+            runOptions.abortSignal = abortController.signal
+          }
+
+          // thinkingConfig is Google-only — Zhipu uses its own `thinking` setting in providerOptions.zhipu
+          if (!isZhipu) {
+            runOptions.providerOptions = {
               google: {
                 thinkingConfig: {
                   thinkingLevel: thinkingLevel,
                   includeThoughts: true,
                 },
               },
-            },
+            }
+          }
+
+          result = streamText({
+            ...runOptions,
             prepareStep: ({ stepNumber, messages: stepMessages }) => {
               if (stepNumber > 0 && drainInjectedMessages) {
                 const injected = drainInjectedMessages()
@@ -849,6 +979,14 @@ export async function runAgent(
                 logger.info('agent', `preserved ${progressMsgs.length} response message(s) from failed attempt (total: ${modelMessages.length})`)
               }
             } catch { /* stream produced no response messages */ }
+          }
+
+          // Progress was made (tool calls/text emitted before the error) → the API IS
+          // working, just intermittently flaky. Reset the transient counter so only
+          // CONSECUTIVE no-progress failures trigger a key/model switch.
+          if (modelMessages.length > prevMsgCount && transientRetries > 0) {
+            transientRetries = 0
+            logger.info('agent', `${currentModel} made progress despite transient error, reset retry counter to 0`)
           }
 
           if (isRateLimitError(e)) {

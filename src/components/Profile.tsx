@@ -1,71 +1,69 @@
-import { useState, useEffect } from 'react'
-import { ArrowLeft, Save, Check, Plus, Trash2 } from 'lucide-react'
-import { cn } from 'src/lib/utils'
+"use client";
 
-export default function Profile({ profile, onBack }: { profile: any; onBack: () => void }) {
-  const [data, setData] = useState<Record<string, any[]>>({})
-  const [primaryApiKey, setPrimaryApiKey] = useState(profile?.gemini_api_key || '')
-  const [extras, setExtras] = useState<Array<{ id?: number; value: string }>>([])
+import { useState, useEffect } from 'react'
+import { ArrowLeft, Save, Check, Plus, Trash2, ChevronDown, ChevronUp, KeyRound, Radio } from 'lucide-react'
+import { motion, AnimatePresence } from 'motion/react'
+import { cn } from 'src/lib/utils'
+import { Message, MessageContent, MessageResponse } from './ai-elements/message'
+
+interface ProfileProps {
+  profile: any;
+  onBack: () => void;
+  onSaved?: () => void;
+}
+
+export default function Profile({ profile, onBack, onSaved }: ProfileProps) {
+  const [activeTab, setActiveTab] = useState<'google' | 'zhipu'>('google')
+  const [primaryGoogleKey, setPrimaryGoogleKey] = useState(profile?.gemini_api_key || '')
+  const [primaryZhipuKey, setPrimaryZhipuKey] = useState(profile?.zai_api_key || '')
+  const [googleExtras, setGoogleExtras] = useState<Array<{ id?: number; value: string }>>([])
+  const [zhipuExtras, setZhipuExtras] = useState<Array<{ id?: number; value: string }>>([])
+  const [codingPlan, setCodingPlan] = useState(profile?.zai_coding_plan === 1)
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
+  const [expandStrategy, setExpandStrategy] = useState(false)
 
   useEffect(() => {
-    Promise.all([
-      window.api.dbQuery('content_pillars'),
-      window.api.dbQuery('hooks'),
-      window.api.dbQuery('target_accounts'),
-      window.api.dbQuery('voice_rules'),
-      window.api.getApiKeys(),
-    ]).then(([pillars, hooks, targets, voice, keys]) => {
-      setData({
-        pillars: pillars as any[],
-        hooks: (hooks as any[])?.sort((a, b) => a.rank - b.rank),
-        targets: targets as any[],
-        voice: voice as any[],
-      })
-      setExtras((keys as any[]).filter(k => k.name !== 'Primary').map(k => ({ id: k.id, value: k.api_key })))
-      if (profile?.gemini_api_key) setPrimaryApiKey(profile.gemini_api_key)
+    window.api.getApiKeys('google').then((keys: any[]) => {
+      setGoogleExtras((keys || []).filter(k => k.name !== 'Primary').map(k => ({ id: k.id, value: k.api_key })))
+      if (profile?.gemini_api_key) setPrimaryGoogleKey(profile.gemini_api_key)
+    })
+    window.api.getApiKeys('zhipu').then((keys: any[]) => {
+      setZhipuExtras((keys || []).filter(k => k.name !== 'Primary').map(k => ({ id: k.id, value: k.api_key })))
     })
   }, [])
-
-  const bannedPhrases = data.voice?.filter(v => v.type === 'banned_phrase') ?? []
-  const bannedStructures = data.voice?.filter(v => v.type === 'banned_structure') ?? []
-  const naturalElements = data.voice?.filter(v => v.type === 'natural_element') ?? []
-  const twTargets = data.targets?.filter(t => t.platform === 'twitter') ?? []
-  const rdTargets = data.targets?.filter(t => t.platform === 'reddit') ?? []
-  const hookCategories = groupHooks(data.hooks ?? [])
-  const brands = [profile?.brand_primary_color, profile?.brand_secondary_color, profile?.brand_accent_color].filter(Boolean)
-
-  const meta = [
-    profile?.primary_goal && ['Goal', profile.primary_goal],
-    profile?.target_audience && ['Audience', profile.target_audience],
-    profile?.superpower && ['Superpower', profile.superpower],
-    profile?.timezone && ['Timezone', profile.timezone],
-  ].filter(Boolean) as [string, string][]
-
-  const hasStrategy = profile?.growth_strategy || data.pillars?.length || data.hooks?.length
-  const hasGuardrails = meta.length > 0 || bannedPhrases.length > 0 || naturalElements.length > 0 || data.targets?.length > 0
-
-  const updateExtra = (i: number, value: string) =>
-    setExtras(prev => prev.map((k, idx) => idx === i ? { ...k, value } : k))
-  const addExtra = () => setExtras(prev => [...prev, { value: '' }])
-  const removeExtra = (i: number) => setExtras(prev => prev.filter((_, idx) => idx !== i))
 
   const handleSaveKeys = async () => {
     setSaving(true)
     try {
-      if (primaryApiKey.trim()) {
-        await window.api.updateProfile({ gemini_api_key: primaryApiKey.trim() })
+      await window.api.updateProfile({
+        gemini_api_key: primaryGoogleKey.trim(),
+        zai_api_key: primaryZhipuKey.trim(),
+        zai_coding_plan: codingPlan ? 1 : 0,
+      })
+
+      // Persist Google backup keys
+      const existingGoogle = ((await window.api.getApiKeys('google')) as any[]).filter(k => k.name !== 'Primary')
+      const keptGoogleIds = new Set(googleExtras.filter(e => e.id).map(e => e.id))
+      for (const k of existingGoogle) {
+        if (!keptGoogleIds.has(k.id)) await window.api.removeApiKey(k.id)
       }
-      const existing = ((await window.api.getApiKeys()) as any[]).filter(k => k.name !== 'Primary')
-      const keptIds = new Set(extras.filter(e => e.id).map(e => e.id))
-      for (const k of existing) {
-        if (!keptIds.has(k.id)) await window.api.removeApiKey(k.id)
+      for (const e of googleExtras) {
+        if (!e.id && e.value.trim()) await window.api.addApiKey(e.value.trim(), 'google')
       }
-      for (const e of extras) {
-        if (!e.id && e.value.trim()) await window.api.addApiKey(e.value.trim())
+
+      // Persist Zhipu backup keys
+      const existingZhipu = ((await window.api.getApiKeys('zhipu')) as any[]).filter(k => k.name !== 'Primary')
+      const keptZhipuIds = new Set(zhipuExtras.filter(e => e.id).map(e => e.id))
+      for (const k of existingZhipu) {
+        if (!keptZhipuIds.has(k.id)) await window.api.removeApiKey(k.id)
       }
+      for (const e of zhipuExtras) {
+        if (!e.id && e.value.trim()) await window.api.addApiKey(e.value.trim(), 'zhipu')
+      }
+
       await window.api.detectApiTier(true)
+      onSaved?.()
       setSaved(true)
       setTimeout(() => setSaved(false), 1500)
     } catch (err) {
@@ -76,289 +74,411 @@ export default function Profile({ profile, onBack }: { profile: any; onBack: () 
     }
   }
 
-  return (
-    <div className="flex-1 overflow-y-auto selection:bg-foreground selection:text-background pb-32">
-      <div className="max-w-[760px] mx-auto px-6 md:px-12 py-16">
-        
-        {/* Navigation */}
-        <button 
-          onClick={onBack} 
-          className="group flex items-center gap-2 text-xs font-medium text-muted-foreground/50 hover:text-foreground transition-colors mb-20 tracking-wide uppercase"
-        >
-          <ArrowLeft className="size-3.5 transition-transform group-hover:-translate-x-1" /> Back to Chat
-        </button>
+  const springTransition = {
+    type: "spring" as const,
+    stiffness: 450,
+    damping: 38
+  }
 
-        {/* Identity Header */}
-        <header className="mb-32">
-          {brands.length > 0 && (
-            <div className="flex items-center gap-1.5 mb-10">
-              {brands.map((c, i) => (
-                <div key={i} className="size-2.5 rounded-sm" style={{ background: c }} />
-              ))}
-            </div>
-          )}
-          <h1 className="text-[2.75rem] font-medium text-foreground tracking-tight leading-[1.1] mb-6">
+  const toggleSpring = {
+    type: "spring" as const,
+    stiffness: 500,
+    damping: 30
+  }
+
+  const containerVariants = {
+    hidden: { opacity: 0 },
+    show: {
+      opacity: 1,
+      transition: {
+        staggerChildren: 0.08,
+        delayChildren: 0.05
+      }
+    }
+  }
+
+  const itemVariants = {
+    hidden: { opacity: 0, y: 16 },
+    show: { 
+      opacity: 1, 
+      y: 0, 
+      transition: { type: "spring" as const, stiffness: 350, damping: 30 } 
+    }
+  }
+
+  return (
+    <div className="flex-1 overflow-y-auto selection:bg-foreground selection:text-background pb-32 bg-[#050507] scrollbar-none relative">
+      {/* Dynamic ambient radial lighting */}
+      <div className="absolute top-0 left-1/2 -translate-x-1/2 w-[800px] h-[400px] bg-blue-500/[0.02] blur-[150px] pointer-events-none" />
+
+      <motion.div 
+        variants={containerVariants}
+        initial="hidden"
+        animate="show"
+        className="max-w-[840px] mx-auto px-8 py-16 relative z-10"
+      >
+        
+        {/* Navigation Action */}
+        <motion.div variants={itemVariants} className="mb-14">
+          <motion.button 
+            onClick={onBack} 
+            whileHover={{ x: -2 }}
+            whileTap={{ scale: 0.98 }}
+            className="group flex items-center gap-2 text-[10px] tracking-[0.16em] font-bold text-zinc-500 hover:text-white transition-colors uppercase"
+          >
+            <ArrowLeft className="size-3.5" />
+            Back to Chat
+          </motion.button>
+        </motion.div>
+
+        {/* Identity Section */}
+        <motion.header variants={itemVariants} className="mb-14">
+          <h1 className="text-4xl md:text-5xl font-bold text-white tracking-tight leading-none mb-4">
             {profile?.name || 'Anonymous User'}
           </h1>
-          <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-sm font-medium tracking-wide">
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 text-xs font-semibold tracking-wide text-zinc-500">
             {profile?.niche && (
-              <span className="text-foreground/80">{profile.niche}</span>
+              <span className="text-zinc-300">{profile.niche}</span>
             )}
             {profile?.niche && (profile?.twitter_handle || profile?.reddit_username) && (
-              <span className="text-muted-foreground/20">/</span>
+              <span className="text-zinc-800">/</span>
             )}
             {profile?.twitter_handle && (
-              <span className="text-muted-foreground/60">@{profile.twitter_handle}</span>
+              <a 
+                href={`https://x.com/${profile.twitter_handle}`} 
+                target="_blank" 
+                rel="noreferrer"
+                className="hover:text-white transition-colors"
+              >
+                @{profile.twitter_handle}
+              </a>
+            )}
+            {profile?.twitter_handle && profile?.reddit_username && (
+              <span className="text-zinc-800">/</span>
             )}
             {profile?.reddit_username && (
-              <span className="text-muted-foreground/60">u/{profile.reddit_username}</span>
+              <a 
+                href={`https://reddit.com/user/${profile.reddit_username}`} 
+                target="_blank" 
+                rel="noreferrer"
+                className="hover:text-white transition-colors"
+              >
+                u/{profile.reddit_username}
+              </a>
             )}
           </div>
-        </header>
+        </motion.header>
 
-        {!hasStrategy ? (
-          <div className="h-40 flex items-center border-t border-white/[0.04]">
-            <p className="text-muted-foreground/40 text-sm">No strategy data initialized.</p>
-          </div>
-        ) : (
-          <div className="space-y-32">
-            
-            {/* Core Strategy */}
-            {profile?.growth_strategy && (
-              <section className="grid grid-cols-1 md:grid-cols-[140px_1fr] gap-8 border-t border-white/[0.04] pt-12">
-                <SectionHeading>Strategy</SectionHeading>
-                <div className="prose prose-invert prose-p:leading-[1.8] prose-p:text-foreground/70 prose-p:text-[15px] prose-p:font-light max-w-none">
-                  {profile.growth_strategy.split('\n\n').map((paragraph: string, i: number) => (
-                    <p key={i} className="mb-6 last:mb-0">{paragraph}</p>
-                  ))}
-                </div>
-              </section>
-            )}
-
-            {/* Pillars Grid */}
-            {data.pillars?.length > 0 && (
-              <section className="grid grid-cols-1 md:grid-cols-[140px_1fr] gap-8 border-t border-white/[0.04] pt-12">
-                <SectionHeading>Pillars</SectionHeading>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                  {data.pillars.map((p, i) => (
-                    <div key={i} className="group relative p-6 bg-white/[0.015] hover:bg-white/[0.03] border border-white/[0.04] hover:border-white/[0.08] transition-colors">
-                      <div className="flex flex-col gap-4">
-                        <div className="flex items-start justify-between gap-3">
-                          <h3 className="text-[15px] font-medium text-foreground/90 leading-tight">{p.name}</h3>
-                          {p.frequency && (
-                            <span className="text-[10px] uppercase tracking-widest text-muted-foreground/40 font-medium shrink-0 pt-0.5">{p.frequency}</span>
-                          )}
-                        </div>
-                        {p.description && (
-                          <p className="text-[13px] text-muted-foreground/60 leading-relaxed font-light">{p.description}</p>
-                        )}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </section>
-            )}
-
-            {/* Hook Architecture */}
-            {data.hooks?.length > 0 && (
-              <section className="grid grid-cols-1 md:grid-cols-[140px_1fr] gap-8 border-t border-white/[0.04] pt-12">
-                <SectionHeading>Hooks</SectionHeading>
-                <div className="space-y-16">
-                  {hookCategories.map(({ category, hooks }) => (
-                    <div key={category} className="space-y-6">
-                      <h3 className="text-[11px] font-medium text-foreground/40 uppercase tracking-widest border-b border-white/[0.04] pb-4 mb-6">{category}</h3>
-                      <div className="space-y-8">
-                        {hooks.map((h) => (
-                          <div key={h.rank} className="group flex flex-col sm:flex-row items-baseline gap-4 sm:gap-6">
-                            <span className="text-[11px] font-mono text-muted-foreground/30 w-6 shrink-0 pt-1">
-                              {h.rank.toString().padStart(2, '0')}
-                            </span>
-                            <div className="flex-1 space-y-2">
-                              <h4 className="text-[15px] font-medium text-foreground/80">{h.name}</h4>
-                              {h.template && (
-                                <p className="text-[14px] text-muted-foreground/50 leading-relaxed font-light font-mono selection:bg-muted-foreground/20">{h.template}</p>
-                              )}
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </section>
-            )}
-
-            {/* Brand Guardrails */}
-            {hasGuardrails && (
-              <section className="grid grid-cols-1 md:grid-cols-[140px_1fr] gap-8 border-t border-white/[0.04] pt-12">
-                <SectionHeading>Guardrails</SectionHeading>
-                <div className="space-y-16">
-                  
-                  {/* Meta Profile */}
-                  {meta.length > 0 && (
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-8 gap-y-6">
-                      {meta.map(([label, value]) => (
-                        <div key={label} className="space-y-2">
-                          <div className="text-[10px] uppercase tracking-widest text-muted-foreground/40 font-medium">{label}</div>
-                          <div className="text-[14px] text-foreground/80 font-light leading-snug">{value}</div>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-
-                  {/* Voice Rules */}
-                  {(naturalElements.length > 0 || bannedPhrases.length > 0 || bannedStructures.length > 0) && (
-                    <div className="space-y-8">
-                      {naturalElements.length > 0 && <TagGroup label="Natural Flow" items={naturalElements.map(v => v.content)} />}
-                      {bannedPhrases.length > 0 && <TagGroup label="Banned Lexicon" items={bannedPhrases.map(v => v.content)} muted />}
-                      {bannedStructures.length > 0 && <TagGroup label="Banned Structures" items={bannedStructures.map(v => v.content)} muted />}
-                    </div>
-                  )}
-
-                  {/* Targets */}
-                  {data.targets?.length > 0 && (
-                    <div className="space-y-4">
-                      <div className="text-[10px] uppercase tracking-widest text-muted-foreground/40 font-medium">Engagement Targets</div>
-                      <div className="flex flex-wrap gap-2 pt-1">
-                        {twTargets.map((t, i) => (
-                          <TargetBadge key={`tw${i}`} prefix="@" handle={t.handle} tier={t.tier} />
-                        ))}
-                        {rdTargets.map((t, i) => (
-                          <TargetBadge key={`rd${i}`} prefix="r/" handle={t.handle} tier={t.tier} />
-                        ))}
-                      </div>
-                    </div>
-                  )}
-
-                </div>
-              </section>
-            )}
-          </div>
-        )}
-
-        {/* API Key Settings */}
-        <section className="mt-32 border-t border-white/[0.04] pt-12">
-          <SectionHeading>API Settings</SectionHeading>
-          <div className="mt-6 space-y-4">
-            <div className="space-y-2">
-              <div className="text-[10px] uppercase tracking-widest text-muted-foreground/40 font-medium">Primary API key</div>
-              <input
-                type="password"
-                value={primaryApiKey}
-                onChange={(e) => setPrimaryApiKey(e.target.value)}
-                placeholder="AIza..."
-                className="w-full bg-white/[0.02] border border-white/[0.06] rounded-lg px-4 py-2.5 text-sm text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:border-white/[0.12] transition-colors"
-              />
+        {/* Playbook Section (Borderless Inline Accordion) */}
+        {profile?.growth_strategy && (
+          <motion.section variants={itemVariants} className="py-10 border-t border-white/[0.03]">
+            <div className="flex items-center justify-between">
+              <h2 className="text-[10px] font-bold uppercase tracking-[0.16em] text-zinc-500">
+                Strategic Playbook
+              </h2>
+              <motion.button 
+                onClick={() => setExpandStrategy(!expandStrategy)}
+                whileTap={{ scale: 0.97 }}
+                className="flex items-center gap-1.5 text-xs font-semibold text-zinc-400 hover:text-white transition-colors"
+              >
+                {expandStrategy ? (
+                  <>Collapse Playbook <ChevronUp className="size-3.5" /></>
+                ) : (
+                  <>Reveal Playbook <ChevronDown className="size-3.5" /></>
+                )}
+              </motion.button>
             </div>
 
-            {extras.map((k, i) => (
-              <div key={k.id ?? `new-${i}`} className="flex gap-2">
-                <input
-                  type="password"
-                  value={k.value}
-                  onChange={(e) => updateExtra(i, e.target.value)}
-                  placeholder="AIza..."
-                  className="flex-1 bg-white/[0.02] border border-white/[0.06] rounded-lg px-4 py-2.5 text-sm text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:border-white/[0.12] transition-colors"
-                />
-                <button
-                  onClick={() => removeExtra(i)}
-                  aria-label="Remove key"
-                  className="px-3 rounded-lg text-muted-foreground/40 hover:text-foreground hover:bg-white/[0.03] transition-colors"
-                >
-                  <Trash2 className="size-4" />
-                </button>
-              </div>
-            ))}
-
-            <button
-              onClick={addExtra}
-              className="flex items-center gap-1.5 text-xs text-muted-foreground/60 hover:text-foreground transition-colors"
+            <div 
+              className={cn(
+                "grid transition-all duration-500 ease-[cubic-bezier(0.16,1,0.3,1)]",
+                expandStrategy ? "grid-rows-[1fr] opacity-100 mt-6" : "grid-rows-[0fr] opacity-0"
+              )}
             >
-              <Plus className="size-3.5" />
-              Add more API key
-            </button>
+              <div className="overflow-hidden">
+                <div className="p-1.5 rounded-2xl bg-white/[0.01] border border-white/[0.02]">
+                  <Message from="assistant">
+                    <MessageContent className="px-6 py-5">
+                      <MessageResponse className="prose prose-invert max-w-none prose-p:leading-[1.75] prose-p:text-zinc-400 prose-p:text-[13.5px] prose-p:font-normal 
+                        prose-headings:font-bold prose-headings:tracking-tight prose-headings:text-white/95 
+                        prose-h1:text-xl prose-h2:text-lg prose-h3:text-base
+                        prose-strong:font-bold prose-strong:text-white
+                        prose-code:text-zinc-300 prose-code:bg-white/[0.04] prose-code:px-1.5 prose-code:py-0.5 prose-code:rounded prose-code:before:content-none prose-code:after:content-none
+                        prose-ul:text-zinc-400 prose-ul:font-normal
+                        prose-ol:text-zinc-400 prose-ol:font-normal"
+                      >
+                        {profile.growth_strategy}
+                      </MessageResponse>
+                    </MessageContent>
+                  </Message>
+                </div>
+              </div>
+            </div>
+          </motion.section>
+        )}
 
-            <div className="pt-2">
-              <button
+        {/* API Settings Section */}
+        <motion.section variants={itemVariants} className="py-10 border-t border-white/[0.03]">
+          <h2 className="text-[10px] font-bold uppercase tracking-[0.16em] text-zinc-500 mb-6">
+            Access Credentials
+          </h2>
+
+          <div className="space-y-6">
+            {/* Elegant Translucent Card Panel */}
+            <div className="p-1.5 rounded-3xl bg-white/[0.02] border border-white/[0.04] shadow-[0_12px_40px_rgba(0,0,0,0.5)]">
+              <div className="p-6 md:p-10 rounded-[calc(1.5rem+4px)] bg-[#0c0c10]/40 shadow-[inset_0_1px_0_rgba(255,255,255,0.03)] space-y-8">
+
+                {/* Sliding Tab Selector */}
+                <div className="p-0.5 rounded-xl bg-white/[0.02] border border-white/[0.04] flex max-w-[240px] relative">
+                  <button
+                    onClick={() => setActiveTab('google')}
+                    className={cn(
+                      "flex-1 py-1.5 text-[10px] uppercase tracking-wider font-bold rounded-lg transition-colors duration-300 relative z-10",
+                      activeTab === 'google' ? "text-white" : "text-zinc-500 hover:text-zinc-300"
+                    )}
+                  >
+                    {activeTab === 'google' && (
+                      <motion.span 
+                        layoutId="activeTabBackdrop"
+                        className="absolute inset-0 rounded-lg bg-white/[0.04] border border-white/[0.03] shadow-sm"
+                        transition={springTransition}
+                      />
+                    )}
+                    Google
+                  </button>
+                  <button
+                    onClick={() => setActiveTab('zhipu')}
+                    className={cn(
+                      "flex-1 py-1.5 text-[10px] uppercase tracking-wider font-bold rounded-lg transition-colors duration-300 relative z-10",
+                      activeTab === 'zhipu' ? "text-white" : "text-zinc-500 hover:text-zinc-300"
+                    )}
+                  >
+                    {activeTab === 'zhipu' && (
+                      <motion.span 
+                        layoutId="activeTabBackdrop"
+                        className="absolute inset-0 rounded-lg bg-white/[0.04] border border-white/[0.03] shadow-sm"
+                        transition={springTransition}
+                      />
+                    )}
+                    Z.AI
+                  </button>
+                </div>
+
+                <AnimatePresence mode="wait">
+                  {activeTab === 'google' ? (
+                    <motion.div 
+                      key="google"
+                      initial={{ opacity: 0, y: 6 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      exit={{ opacity: 0, y: -6 }}
+                      transition={{ duration: 0.2 }}
+                      className="space-y-6"
+                    >
+                      {/* Primary Key */}
+                      <div className="space-y-2">
+                        <label className="text-[10px] uppercase tracking-[0.16em] text-zinc-500 font-bold block ml-1">
+                          Primary API key
+                        </label>
+                        <div className="relative flex items-center group">
+                          <input
+                            type="password"
+                            value={primaryGoogleKey}
+                            onChange={(e) => setPrimaryGoogleKey(e.target.value)}
+                            placeholder="AIza..."
+                            className="w-full bg-[#040406]/50 hover:bg-[#040406]/80 focus:bg-black/90 border border-white/[0.05] hover:border-white/[0.08] focus:border-blue-500/40 rounded-xl pl-11 pr-4 py-4 text-sm font-mono text-white placeholder:text-zinc-700 outline-none focus:outline-none transition-all shadow-[inset_0_1.5px_3px_rgba(0,0,0,0.9)] focus:ring-1 focus:ring-blue-500/10"
+                          />
+                          <KeyRound className="size-4 text-zinc-600 group-focus-within:text-blue-500/50 absolute left-4 transition-colors" />
+                        </div>
+                      </div>
+
+                      {/* Google Backup Keys */}
+                      <AnimatePresence mode="popLayout">
+                        {googleExtras.map((k, i) => (
+                          <motion.div 
+                            key={k.id ?? `new-g-${i}`} 
+                            initial={{ opacity: 0, scale: 0.98, y: 10 }}
+                            animate={{ opacity: 1, scale: 1, y: 0 }}
+                            exit={{ opacity: 0, scale: 0.98, y: -10 }}
+                            transition={springTransition}
+                            className="flex items-end gap-3"
+                          >
+                            <div className="flex-1 space-y-2">
+                              <label className="text-[10px] uppercase tracking-[0.16em] text-zinc-500 font-bold block ml-1">
+                                Backup API key
+                              </label>
+                              <div className="relative flex items-center group">
+                                <input
+                                  type="password"
+                                  value={k.value}
+                                  onChange={(e) => setGoogleExtras(prev => prev.map((item, idx) => idx === i ? { ...item, value: e.target.value } : item))}
+                                  placeholder="AIza..."
+                                  className="w-full bg-[#040406]/50 hover:bg-[#040406]/80 focus:bg-black/90 border border-white/[0.05] hover:border-white/[0.08] focus:border-blue-500/40 rounded-xl pl-11 pr-4 py-4 text-sm font-mono text-white placeholder:text-zinc-700 outline-none focus:outline-none transition-all shadow-[inset_0_1.5px_3px_rgba(0,0,0,0.9)] focus:ring-1 focus:ring-blue-500/10"
+                                />
+                                <KeyRound className="size-4 text-zinc-600 group-focus-within:text-blue-500/50 absolute left-4 transition-colors" />
+                              </div>
+                            </div>
+                            <motion.button
+                              onClick={() => setGoogleExtras(prev => prev.filter((_, idx) => idx !== i))}
+                              whileTap={{ scale: 0.95 }}
+                              className="flex items-center justify-center w-12 h-[54px] rounded-xl bg-white/[0.01] hover:bg-white/[0.02] border border-white/[0.04] hover:border-red-500/20 hover:bg-red-500/10 text-zinc-600 hover:text-red-400 transition-colors shrink-0 shadow-sm"
+                            >
+                              <Trash2 className="size-4" />
+                            </motion.button>
+                          </motion.div>
+                        ))}
+                      </AnimatePresence>
+
+                      <div className="pt-2">
+                        <motion.button
+                          onClick={() => setGoogleExtras(prev => [...prev, { value: '' }])}
+                          whileTap={{ scale: 0.98 }}
+                          className="flex items-center gap-2 text-xs text-zinc-500 hover:text-white transition-colors font-semibold ml-1"
+                        >
+                          <span className="flex items-center justify-center w-6 h-6 rounded-lg bg-white/[0.02] border border-white/[0.04] group-hover:bg-white/[0.04] transition-colors">
+                            <Plus className="size-3.5" />
+                          </span>
+                          Add backup key
+                        </motion.button>
+                      </div>
+                    </motion.div>
+                  ) : (
+                    <motion.div 
+                      key="zhipu"
+                      initial={{ opacity: 0, y: 6 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      exit={{ opacity: 0, y: -6 }}
+                      transition={{ duration: 0.2 }}
+                      className="space-y-6"
+                    >
+                      {/* Primary Zhipu Key */}
+                      <div className="space-y-2">
+                        <label className="text-[10px] uppercase tracking-[0.16em] text-zinc-500 font-bold block ml-1">
+                          Primary Z.AI API key
+                        </label>
+                        <div className="relative flex items-center group">
+                          <input
+                            type="password"
+                            value={primaryZhipuKey}
+                            onChange={(e) => setPrimaryZhipuKey(e.target.value)}
+                            placeholder="ZAI_api_key..."
+                            className="w-full bg-[#040406]/50 hover:bg-[#040406]/80 focus:bg-black/90 border border-white/[0.05] hover:border-white/[0.08] focus:border-blue-500/40 rounded-xl pl-11 pr-4 py-4 text-sm font-mono text-white placeholder:text-zinc-700 outline-none focus:outline-none transition-all shadow-[inset_0_1.5px_3px_rgba(0,0,0,0.9)] focus:ring-1 focus:ring-blue-500/10"
+                          />
+                          <KeyRound className="size-4 text-zinc-600 group-focus-within:text-blue-500/50 absolute left-4 transition-colors" />
+                        </div>
+                      </div>
+
+                      {/* Coding Plan toggle */}
+                      <div className="flex items-center justify-between p-5 rounded-2xl bg-white/[0.01] hover:bg-white/[0.02] border border-white/[0.04] shadow-sm transition-colors">
+                        <div>
+                          <div className="text-xs font-semibold text-white tracking-tight">Coding Plan Mode</div>
+                          <div className="text-[10px] text-zinc-500 font-medium mt-0.5">Toggle to use dedicated endpoint: https://api.z.ai/api/coding/paas/v4</div>
+                        </div>
+                        {/* Apple style physical switch */}
+                        <button
+                          onClick={() => setCodingPlan(!codingPlan)}
+                          className={cn(
+                            "w-11 h-6 rounded-full relative p-0.5 transition-colors duration-300 flex items-center border shadow-[inset_0_1px_2px_rgba(0,0,0,0.4)]",
+                            codingPlan 
+                              ? "bg-blue-600 border-blue-500/10" 
+                              : "bg-[#0c0c0f] border-white/[0.04]"
+                          )}
+                        >
+                          <motion.span 
+                            layout
+                            transition={toggleSpring}
+                            className="size-5 rounded-full bg-white shadow-md block" 
+                            style={{ marginLeft: codingPlan ? 'auto' : '0px' }}
+                          />
+                        </button>
+                      </div>
+
+                      {/* Zhipu Backup Keys */}
+                      <AnimatePresence mode="popLayout">
+                        {zhipuExtras.map((k, i) => (
+                          <motion.div 
+                            key={k.id ?? `new-z-${i}`} 
+                            initial={{ opacity: 0, scale: 0.98, y: 10 }}
+                            animate={{ opacity: 1, scale: 1, y: 0 }}
+                            exit={{ opacity: 0, scale: 0.98, y: -10 }}
+                            transition={springTransition}
+                            className="flex items-end gap-3"
+                          >
+                            <div className="flex-1 space-y-2">
+                              <label className="text-[10px] uppercase tracking-[0.16em] text-zinc-500 font-bold block ml-1">
+                                Backup API key
+                              </label>
+                              <div className="relative flex items-center group">
+                                <input
+                                  type="password"
+                                  value={k.value}
+                                  onChange={(e) => setZhipuExtras(prev => prev.map((item, idx) => idx === i ? { ...item, value: e.target.value } : item))}
+                                  placeholder="ZAI_api_key..."
+                                  className="w-full bg-[#040406]/50 hover:bg-[#040406]/80 focus:bg-black/90 border border-white/[0.05] hover:border-white/[0.08] focus:border-blue-500/40 rounded-xl pl-11 pr-4 py-4 text-sm font-mono text-white placeholder:text-zinc-700 outline-none focus:outline-none transition-all shadow-[inset_0_1.5px_3px_rgba(0,0,0,0.9)] focus:ring-1 focus:ring-blue-500/10"
+                                />
+                                <KeyRound className="size-4 text-zinc-600 group-focus-within:text-blue-500/50 absolute left-4 transition-colors" />
+                              </div>
+                            </div>
+                            <motion.button
+                              onClick={() => setZhipuExtras(prev => prev.filter((_, idx) => idx !== i))}
+                              whileTap={{ scale: 0.95 }}
+                              className="flex items-center justify-center w-12 h-[54px] rounded-xl bg-white/[0.01] hover:bg-white/[0.02] border border-white/[0.04] hover:border-red-500/20 hover:bg-red-500/10 text-zinc-600 hover:text-red-400 transition-colors shrink-0 shadow-sm"
+                            >
+                              <Trash2 className="size-4" />
+                            </motion.button>
+                          </motion.div>
+                        ))}
+                      </AnimatePresence>
+
+                      <div className="pt-2">
+                        <motion.button
+                          onClick={() => setZhipuExtras(prev => [...prev, { value: '' }])}
+                          whileTap={{ scale: 0.98 }}
+                          className="flex items-center gap-2 text-xs text-zinc-500 hover:text-white transition-colors font-semibold ml-1"
+                        >
+                          <span className="flex items-center justify-center w-6 h-6 rounded-lg bg-white/[0.02] border border-white/[0.04] group-hover:bg-white/[0.04] transition-colors">
+                            <Plus className="size-3.5" />
+                          </span>
+                          Add backup key
+                        </motion.button>
+                      </div>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+
+              </div>
+            </div>
+
+            {/* Save Button */}
+            <div className="pt-2 flex justify-end">
+              <motion.button
                 onClick={handleSaveKeys}
-                disabled={saving || (!primaryApiKey.trim() && !extras.some(e => e.value.trim()))}
-                className="flex items-center gap-2 px-4 py-2.5 bg-foreground text-background rounded-lg text-sm font-medium hover:opacity-90 transition-opacity disabled:opacity-50 disabled:cursor-not-allowed"
+                whileTap={{ scale: 0.96 }}
+                disabled={saving || (!primaryGoogleKey.trim() && !primaryZhipuKey.trim() && !googleExtras.some(e => e.value.trim()) && !zhipuExtras.some(e => e.value.trim()))}
+                className="group flex items-center gap-3 pl-5 pr-2 py-2 bg-white hover:bg-zinc-100 text-[#050507] rounded-full text-[13px] font-bold transition-all duration-300 disabled:opacity-30 disabled:pointer-events-none shadow-[0_4px_12px_rgba(0,0,0,0.1)] border border-white/[0.04]"
               >
                 {saving ? (
                   <span className="animate-pulse">Saving...</span>
                 ) : saved ? (
-                  <><Check className="size-4" /> Saved</>
+                  <>Changes Applied</>
                 ) : (
-                  <><Save className="size-4" /> Save</>
+                  <>Save credentials</>
                 )}
-              </button>
+
+                <span className="flex items-center justify-center w-8 h-8 rounded-full bg-zinc-900 text-white group-hover:translate-x-0.5 group-hover:-translate-y-[1px] transition-transform duration-300">
+                  {saved ? <Check className="size-3.5 stroke-[2.5]" /> : <Save className="size-3.5" />}
+                </span>
+              </motion.button>
             </div>
           </div>
-        </section>
+        </motion.section>
 
         {/* Footer */}
         {profile?.created_at && (
-          <div className="mt-32 pt-8 border-t border-white/[0.04] text-[11px] tracking-wide text-muted-foreground/30 font-medium uppercase">
+          <motion.div variants={itemVariants} className="mt-20 pt-8 border-t border-white/[0.03] text-[9px] tracking-[0.2em] text-zinc-600 font-bold uppercase text-center">
             Initialized {new Date(profile.created_at.replace(' ', 'T') + 'Z').toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' })}
-          </div>
+          </motion.div>
         )}
-      </div>
+      </motion.div>
     </div>
-  )
-}
-
-function groupHooks(hooks: any[]) {
-  const map = new Map<string, any[]>()
-  for (const h of hooks) {
-    const cat = h.category || 'General'
-    if (!map.has(cat)) map.set(cat, [])
-    map.get(cat)!.push(h)
-  }
-  return Array.from(map, ([category, hooks]) => ({ category, hooks }))
-}
-
-function SectionHeading({ children }: { children: React.ReactNode }) {
-  return (
-    <h2 className="text-[11px] font-medium text-foreground/40 uppercase tracking-widest pt-1">
-      {children}
-    </h2>
-  )
-}
-
-function TagGroup({ label, items, muted = false }: { label: string; items: string[]; muted?: boolean }) {
-  return (
-    <div className="space-y-3">
-      <div className="text-[10px] uppercase tracking-widest text-muted-foreground/40 font-medium">{label}</div>
-      <div className="flex flex-wrap gap-2 pt-1">
-        {items.map((item, i) => (
-          <span 
-            key={i} 
-            className={cn(
-              "text-[12px] font-light px-3 py-1.5 rounded-sm",
-              muted 
-                ? "bg-white/[0.02] text-muted-foreground/60 border border-white/[0.03]" 
-                : "bg-white/[0.04] text-foreground/70 border border-white/[0.06]"
-            )}
-          >
-            {item}
-          </span>
-        ))}
-      </div>
-    </div>
-  )
-}
-
-function TargetBadge({ prefix, handle, tier }: { prefix: string, handle: string, tier?: string }) {
-  return (
-    <span className="inline-flex items-baseline gap-1.5 px-3 py-1.5 bg-white/[0.02] border border-white/[0.04] rounded-sm transition-colors hover:bg-white/[0.04]">
-      <span className="text-[13px] font-medium text-foreground/70">
-        <span className="text-muted-foreground/40 mr-[1px]">{prefix}</span>{handle}
-      </span>
-      {tier && (
-        <span className="text-[9px] font-medium uppercase tracking-widest text-muted-foreground/30">
-          {tier}
-        </span>
-      )}
-    </span>
   )
 }
