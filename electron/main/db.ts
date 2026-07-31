@@ -649,9 +649,9 @@ export function getAvailableModels(tier?: string): string[] {
   if (googleKeys.count > 0) {
     const proGoogleKeys = db.prepare('SELECT COUNT(*) as count FROM api_keys WHERE provider = \'google\' AND tier = \'pro\' AND is_active = 1').get() as any
     if (proGoogleKeys.count > 0) {
-      models.push('gemini-3.5-flash', 'gemini-3.1-pro', 'gemini-3.1-flash-lite')
+      models.push('gemini-3.6-flash', 'gemini-3.1-pro', 'gemini-3.5-flash-lite')
     } else {
-      models.push('gemini-3.1-flash-lite', 'gemini-3.5-flash')
+      models.push('gemini-3.5-flash-lite', 'gemini-3.6-flash')
     }
   }
 
@@ -676,9 +676,9 @@ export function getAvailableModels(tier?: string): string[] {
 
 export function getDefaultModel(tier?: string): string {
   const models = getAvailableModels(tier)
-  if (models.includes('gemini-3.5-flash')) return 'gemini-3.5-flash'
+  if (models.includes('gemini-3.6-flash')) return 'gemini-3.6-flash'
   if (models.includes('glm-4.7-flash')) return 'glm-4.7-flash'
-  return models[0] || 'gemini-3.1-flash-lite'
+  return models[0] || 'gemini-3.5-flash-lite'
 }
 
 export function getSelectedModel(): string | null {

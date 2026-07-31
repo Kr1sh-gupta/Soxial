@@ -9,9 +9,9 @@ const SMOOTH =
   "max-width 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275), height 0.15s ease-out";
 
 const MODEL_DISPLAY: Record<string, string> = {
-  "gemini-3.5-flash": "Gemini 3.5 Flash",
+  "gemini-3.6-flash": "Gemini 3.6 Flash",
   "gemini-3.1-pro": "Gemini 3.1 Pro",
-  "gemini-3.1-flash-lite": "Gemini 3.1 Flash Lite",
+  "gemini-3.5-flash-lite": "Gemini 3.5 Flash Lite",
   "glm-5.2": "GLM 5.2",
   "glm-5-turbo": "GLM 5 Turbo",
   "glm-4.7-flash": "GLM 4.7 Flash",
@@ -191,7 +191,7 @@ export const PromptInput = React.forwardRef<HTMLDivElement, PromptInputProps>(
     onSubmit,
     placeholder = "Ask anything",
     className,
-    models = ["Gemini 3.1 Flash Lite"],
+    models = ["Gemini 3.5 Flash Lite"],
     model: controlledModel,
     efforts = ["Low", "Medium", "High"],
     modelSupportsEffort = () => true,

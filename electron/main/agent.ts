@@ -9,7 +9,7 @@ import { SOCIAL_FETCH_TOOLS } from './social-content'
 import { SYSTEM_PROMPT } from './agent-system-prompt'
 export { ONBOARDING_SYSTEM_PROMPT } from './onboarding-system-prompt'
 
-const CHAT_MODEL = 'gemini-3.1-flash-lite'
+const CHAT_MODEL = 'gemini-3.5-flash-lite'
 const TITLE_MODEL = 'gemma-4-31b-it'
 
 // ─── Title / Quick-action model selection ───────────────────────────────────
@@ -19,7 +19,7 @@ const TITLE_MODEL = 'gemma-4-31b-it'
 //     quick = GLM model (Z.AI priority)
 //   Google only (any tier):
 //     title = gemma-4-31b-it
-//     quick = gemini-3.1-flash-lite
+//     quick = gemini-3.5-flash-lite
 //   Z.AI coding plan:
 //     title = glm-4.5-air
 //     quick = glm-5-turbo
@@ -48,16 +48,16 @@ export function getQuickActionModel(): string {
     if (profile?.zai_coding_plan) return 'glm-5-turbo'
     return getApiTier().tier === 'pro' ? 'glm-5-turbo' : 'glm-4.7-flash'
   }
-  return 'gemini-3.1-flash-lite'
+  return 'gemini-3.5-flash-lite'
 }
 
 const MODEL_LABELS: Record<string, string> = {
-  'Gemini 3.5 Flash': 'gemini-3.5-flash',
-  'gemini-3.5-flash': 'gemini-3.5-flash',
+  'Gemini 3.6 Flash': 'gemini-3.6-flash',
+  'gemini-3.6-flash': 'gemini-3.6-flash',
   'Gemini 3.1 Pro': 'gemini-3.1-pro',
   'gemini-3.1-pro': 'gemini-3.1-pro',
-  'Gemini 3.1 Flash Lite': 'gemini-3.1-flash-lite',
-  'gemini-3.1-flash-lite': CHAT_MODEL,
+  'Gemini 3.5 Flash Lite': 'gemini-3.5-flash-lite',
+  'gemini-3.5-flash-lite': CHAT_MODEL,
   'GLM 5.2': 'glm-5.2',
   'glm-5.2': 'glm-5.2',
   'GLM 5 Turbo': 'glm-5-turbo',
@@ -68,9 +68,9 @@ const MODEL_LABELS: Record<string, string> = {
   'glm-4.5-flash': 'glm-4.5-flash',
 }
 
-export const ONBOARDING_MODEL_FALLBACK = ['gemini-3.5-flash', 'gemini-3.1-flash-lite']
-export const CHAT_MODEL_FALLBACK_PRO = ['gemini-3.5-flash', 'gemini-3.1-pro', 'gemini-3.1-flash-lite']
-export const CHAT_MODEL_FALLBACK_FREE = ['gemini-3.1-flash-lite', 'gemini-3.5-flash']
+export const ONBOARDING_MODEL_FALLBACK = ['gemini-3.6-flash', 'gemini-3.5-flash-lite']
+export const CHAT_MODEL_FALLBACK_PRO = ['gemini-3.6-flash', 'gemini-3.1-pro', 'gemini-3.5-flash-lite']
+export const CHAT_MODEL_FALLBACK_FREE = ['gemini-3.5-flash-lite', 'gemini-3.6-flash']
 
 // Dynamic onboarding fallback chain: prefers Google if present, falls back to Z.AI if only Zhipu keys exist.
 export function getOnboardingFallbackChain(): string[] {
@@ -82,11 +82,11 @@ export function getOnboardingFallbackChain(): string[] {
   const hasZhipu = zhipuKeys.count > 0
 
   if (hasGoogle && hasZhipu) {
-    return ['gemini-3.5-flash', 'glm-4.7-flash', 'glm-4.5-flash', 'gemini-3.1-flash-lite']
+    return ['gemini-3.6-flash', 'glm-4.7-flash', 'glm-4.5-flash', 'gemini-3.5-flash-lite']
   } else if (hasZhipu) {
     return ['glm-4.7-flash', 'glm-4.5-flash']
   } else {
-    return ['gemini-3.5-flash', 'gemini-3.1-flash-lite'] // Default Google only
+    return ['gemini-3.6-flash', 'gemini-3.5-flash-lite'] // Default Google only
   }
 }
 

@@ -58,7 +58,7 @@ async function generateGeminiImage(prompt: string, filename: string): Promise<st
   logger.info('gemini-image', `generating: "${prompt.slice(0, 80)}" -> ${filename}`)
 
   const interaction = await ai.interactions.create({
-    model: 'gemini-3.1-flash-lite-image',
+    model: 'gemini-3.5-flash-lite-image',
     store: false,
     input: [{ type: 'user_input', content: [{ type: 'text', text: prompt }] }],
   } as any)

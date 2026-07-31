@@ -340,7 +340,7 @@ export default function Chat({ initialSessionId }: { initialSessionId?: number |
   const stepsRefs = useRef<Record<number, StepItem[]>>({});
 
   const [sidebarOpen, setSidebarOpen] = useState(true);
-  const [selectedModel, setSelectedModelState] = useState("gemini-3.1-flash-lite");
+  const [selectedModel, setSelectedModelState] = useState("gemini-3.5-flash-lite");
 
   const setSelectedModel = useCallback((model: string) => {
     setSelectedModelState(model);
@@ -1553,7 +1553,7 @@ export default function Chat({ initialSessionId }: { initialSessionId?: number |
                       ? "Start a new conversation..."
                       : "Message Soxial..."
                   }
-                  models={availableModels.length > 0 ? availableModels : ["gemini-3.1-flash-lite"]}
+                  models={availableModels.length > 0 ? availableModels : ["gemini-3.5-flash-lite"]}
                   model={selectedModel}
                   modelSupportsEffort={(model) => model !== "gemini-3.1-pro" && !model.startsWith("glm")}
                   isStreaming={streaming}
