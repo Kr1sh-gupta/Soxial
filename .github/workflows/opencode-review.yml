@@ -17,15 +17,19 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       id-token: write
-      contents: read
+      contents: write
       pull-requests: write
       issues: write
       statuses: write
     steps:
       - uses: actions/checkout@v6
         with:
-          persist-credentials: false
           fetch-depth: 0
+
+      - name: Configure git identity
+        run: |
+          git config --global user.name "opencode-agent[bot]"
+          git config --global user.email "opencode-agent[bot]@users.noreply.github.com"
 
       - uses: anomalyco/opencode/github@latest
         id: review
