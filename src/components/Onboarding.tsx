@@ -159,7 +159,7 @@ function Input({ label, value, onChange, placeholder, type = 'text', hint, icon:
           placeholder={placeholder}
           className={cn(
             "w-full bg-[#040406]/50 hover:bg-[#040406]/80 focus:bg-black/90 border border-white/[0.05] hover:border-white/[0.08] focus:border-blue-500/40 rounded-xl px-4 py-3.5 text-sm text-white placeholder:text-zinc-700 outline-none focus:outline-none transition-all shadow-[inset_0_1.5px_3px_rgba(0,0,0,0.9)] focus:ring-1 focus:ring-blue-500/10",
-            Icon ? "pl-11" : "px-4.5"
+            Icon ? "pl-11" : "px-4"
           )}
         />
         {Icon && <Icon className="size-4 text-zinc-600 group-focus-within:text-blue-500/50 absolute left-4 transition-colors" />}
@@ -179,7 +179,7 @@ function Textarea({ label, value, onChange, placeholder, hint }: any) {
           onChange={(e) => onChange(e.target.value)}
           placeholder={placeholder}
           rows={3}
-          className="w-full bg-[#040406]/50 hover:bg-[#040406]/80 focus:bg-black/90 border border-white/[0.05] hover:border-white/[0.08] focus:border-blue-500/40 rounded-xl px-4.5 py-3.5 text-sm text-white placeholder:text-zinc-700 outline-none focus:outline-none transition-all shadow-[inset_0_1.5px_3px_rgba(0,0,0,0.9)] focus:ring-1 focus:ring-blue-500/10 resize-none"
+          className="w-full bg-[#040406]/50 hover:bg-[#040406]/80 focus:bg-black/90 border border-white/[0.05] hover:border-white/[0.08] focus:border-blue-500/40 rounded-xl px-4 py-3.5 text-sm text-white placeholder:text-zinc-700 outline-none focus:outline-none transition-all shadow-[inset_0_1.5px_3px_rgba(0,0,0,0.9)] focus:ring-1 focus:ring-blue-500/10 resize-none"
         />
       </div>
       {hint && <p className="mt-2 text-xs text-zinc-500/50 ml-1">{hint}</p>}
