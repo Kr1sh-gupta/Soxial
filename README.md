@@ -115,13 +115,14 @@ soxial/
 
 ## Contributing
 
-Contributions are welcome. Since `main` is protected, all changes go through pull requests:
+Contributions are welcome. Since `main` is protected by a ruleset, all changes go through pull requests:
 
-1. Fork the repo and create a feature branch
+1. Create a feature branch (or fork the repo)
 2. Run `npm run typecheck` and `npm run build` locally before pushing
 3. Open a pull request — CI runs typecheck + build on every PR
-4. PRs opened from branches inside this repo get an automated AI review. On fork PRs (where CI secrets are unavailable), the maintainer or a trusted contributor can trigger one by commenting `/oc review this PR`
-5. The maintainer merges once all checks pass
+4. PRs from collaborators (branches inside this repo) get an automated AI review, which must pass (`opencode-review` check). Fork PRs are not auto-reviewed because CI secrets can't reach them
+5. The maintainer (code owner) is automatically requested as a reviewer — merging requires the maintainer's approval
+6. Once the checks pass and the maintainer approves, the PR can be merged
 
 ## Author
 
