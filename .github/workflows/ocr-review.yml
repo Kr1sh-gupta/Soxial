@@ -1,0 +1,50 @@
+name: ocr pr review
+
+concurrency:
+  group: ocr-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+jobs:
+  review:
+    if: |
+      github.repository == 'rabden/Soxial' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.actor != 'github-actions[bot]' &&
+      github.actor != 'opencode-agent[bot]'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      statuses: write
+    steps:
+      - name: Run OpenCodeReview
+        id: ocr
+        uses: alibaba/open-code-review@v1.8.6
+        with:
+          llm_url: https://console.opencode.ai/inference/openai/v1/chat/completions
+          llm_auth_token: ${{ secrets.OCR_LLM_TOKEN }}
+          llm_model: deepseek-v4-flash-free
+          llm_use_anthropic: 'false'
+          sticky_summary: 'true'
+          incremental: 'true'
+
+      - name: Set opencode-review status
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          SHA="${{ github.event.pull_request.head.sha }}"
+          if [ "${{ steps.ocr.outcome }}" = "success" ]; then
+            state="success"; desc="ocr review completed"
+          else
+            state="failure"; desc="ocr review failed"
+          fi
+          gh api -X POST "repos/rabden/Soxial/statuses/${SHA}" \
+            -f state="$state" \
+            -f context="opencode-review" \
+            -f description="$desc" \
+            -f target_url="https://github.com/rabden/Soxial/actions/runs/${{ github.run_id }}"
