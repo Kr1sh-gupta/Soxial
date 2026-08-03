@@ -21,6 +21,27 @@ jobs:
       pull-requests: write
       statuses: write
     steps:
+      - name: DEBUG endpoint probe
+        env:
+          LLM_URL: https://console.opencode.ai/inference/openai/v1/chat/completions
+          LLM_TOKEN: ${{ secrets.OCR_LLM_TOKEN }}
+        run: |
+          echo "--- A) plain chat ---"
+          curl -sS -o /tmp/a.json -w "%{http_code}\n" -X POST "$LLM_URL" \
+            -H "Authorization: Bearer $LLM_TOKEN" -H "Content-Type: application/json" \
+            -d '{"model":"deepseek-v4-flash-free","messages":[{"role":"user","content":"hi"}],"max_tokens":5}'
+          head -c 600 /tmp/a.json; echo
+          echo "--- B) with tools ---"
+          curl -sS -o /tmp/b.json -w "%{http_code}\n" -X POST "$LLM_URL" \
+            -H "Authorization: Bearer $LLM_TOKEN" -H "Content-Type: application/json" \
+            -d '{"model":"deepseek-v4-flash-free","messages":[{"role":"user","content":"weather in tokyo?"}],"max_tokens":40,"tools":[{"type":"function","function":{"name":"get_weather","description":"g","parameters":{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}}}]}'
+          head -c 600 /tmp/b.json; echo
+          echo "--- C) with extra_body thinking ---"
+          curl -sS -o /tmp/c.json -w "%{http_code}\n" -X POST "$LLM_URL" \
+            -H "Authorization: Bearer $LLM_TOKEN" -H "Content-Type: application/json" \
+            -d '{"model":"deepseek-v4-flash-free","messages":[{"role":"user","content":"hi"}],"max_tokens":5,"thinking":{"type":"disabled"}}'
+          head -c 600 /tmp/c.json; echo
+
       - name: Run OpenCodeReview
         id: ocr
         uses: alibaba/open-code-review@v1.8.6
