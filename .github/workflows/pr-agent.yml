@@ -5,16 +5,14 @@ concurrency:
   cancel-in-progress: true
 
 on:
-  pull_request:
+  pull_request_target:
     types: [opened, synchronize, reopened, ready_for_review]
 
 jobs:
   pr_agent_job:
     if: |
       github.repository == 'rabden/Soxial' &&
-      github.event.pull_request.head.repo.full_name == github.repository &&
-      github.actor != 'github-actions[bot]' &&
-      github.actor != 'opencode-agent[bot]'
+      (github.actor == 'rabden' || github.actor == 'kubenstein')
     runs-on: ubuntu-latest
     permissions:
       issues: write
