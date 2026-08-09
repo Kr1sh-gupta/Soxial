@@ -419,6 +419,11 @@ export function insertRow(table: string, data: Record<string, any>) {
   return result.lastInsertRowid
 }
 
+export function deleteRow(table: string, id: number) {
+  const result = getDb().prepare(`DELETE FROM ${table} WHERE id = ?`).run(id)
+  return result.changes > 0
+}
+
 export function createChatSession(title?: string) {
   const db = getDb()
   const result = db.prepare('INSERT INTO chat_sessions (title) VALUES (?)').run(title || 'New Chat')

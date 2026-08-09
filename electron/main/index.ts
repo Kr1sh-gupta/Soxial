@@ -3,7 +3,7 @@ import { join } from 'path'
 import { readFileSync, existsSync } from 'fs'
 import { config } from 'dotenv'
 config()
-import { getDb, getProfile, updateProfile, queryAll, insertRow, createChatSession, getChatSessions, getChatMessages, addChatMessage, updateChatSessionTitle, getChatSessionContextSummary, updateChatSessionContextSummary, deleteChatSession, getQuickActions, setQuickActions, getQuickActionsContext, getApiTier, setApiTier, getAvailableModels, getDefaultModel, getApiKeys, addApiKey, removeApiKey, getModelExhaustionStatus, getSelectedModel, setSelectedModel } from './db'
+import { getDb, getProfile, updateProfile, queryAll, insertRow, deleteRow, createChatSession, getChatSessions, getChatMessages, addChatMessage, updateChatSessionTitle, getChatSessionContextSummary, updateChatSessionContextSummary, deleteChatSession, getQuickActions, setQuickActions, getQuickActionsContext, getApiTier, setApiTier, getAvailableModels, getDefaultModel, getApiKeys, addApiKey, removeApiKey, getModelExhaustionStatus, getSelectedModel, setSelectedModel } from './db'
 import { ensureCliInstalled, ensureRdtAuth, ensureTwitterAuth, checkCli, checkCliAuth, runCli } from './cli'
 import { gatherOnboardingSocialData } from './social-content'
 import { runAgent, generateText, ONBOARDING_SYSTEM_PROMPT, createOnboardingTools, installOnboardingAnswerListener, clearPendingQuestions, createChatTools, installChatAnswerListener, clearPendingChatQuestions, ONBOARDING_MODEL_FALLBACK, CHAT_MODEL_FALLBACK_PRO, CHAT_MODEL_FALLBACK_FREE, getOnboardingFallbackChain, getTitleModel, getQuickActionModel } from './agent'
@@ -230,6 +230,12 @@ function setupIpc() {
     if (isTwitterHandleRebuildActive()) throw new Error('Profile rebuild in progress. Try again after it finishes.')
     logger.debug('main', `db:insert ${table}`, Object.keys(data))
     return insertRow(table, data)
+  })
+
+  ipcMain.handle('db:delete', (_e, table: string, id: number) => {
+    if (isTwitterHandleRebuildActive()) throw new Error('Profile rebuild in progress. Try again after it finishes.')
+    logger.info('main', `db:delete ${table} id=${id}`)
+    return deleteRow(table, id)
   })
 
   ipcMain.handle('twitterHandleRebuild:preview', (_e, handle: string) => {
