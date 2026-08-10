@@ -6,6 +6,7 @@ const api = {
   updateProfile: (data: Record<string, any>) => ipcRenderer.invoke('db:updateProfile', data),
   dbQuery: (table: string, where?: string, params?: any[]) => ipcRenderer.invoke('db:query', table, where, params),
   dbInsert: (table: string, data: Record<string, any>) => ipcRenderer.invoke('db:insert', table, data),
+  dbDelete: (table: string, id: number) => ipcRenderer.invoke('db:delete', table, id),
 
   previewTwitterHandleRebuild: (handle: string) => ipcRenderer.invoke('twitterHandleRebuild:preview', handle),
   startTwitterHandleRebuild: (handle: string, previewCount: number) => ipcRenderer.invoke('twitterHandleRebuild:start', handle, previewCount),

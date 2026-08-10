@@ -5,6 +5,7 @@ interface Window {
     updateProfile: (data: Record<string, any>) => Promise<any>
     dbQuery: (table: string, where?: string, params?: any[]) => Promise<any>
     dbInsert: (table: string, data: Record<string, any>) => Promise<any>
+    dbDelete: (table: string, id: number) => Promise<boolean>
     previewTwitterHandleRebuild: (handle: string) => Promise<{ handle: string; activeTwitterScheduledPostCount: number }>
     startTwitterHandleRebuild: (handle: string, previewCount: number) => Promise<{ success: boolean; profile: any; archivedCount: number }>
     onTwitterHandleRebuildProgress: (cb: (event: { phase: string; message?: string; name?: string; args?: unknown; result?: unknown; text?: string; model?: string }) => void) => () => void
