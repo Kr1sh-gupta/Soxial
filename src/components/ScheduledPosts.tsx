@@ -34,6 +34,8 @@ function parseRedditContent(text: string): { title: string; selftext: string } {
 export default function ScheduledPosts({ profile, onBack }: { profile: any; onBack: () => void }) {
   const [posts, setPosts] = useState<ScheduledPost[]>([])
   const [loading, setLoading] = useState(true)
+  const [confirmId, setConfirmId] = useState<number | null>(null)
+  const [deletingId, setDeletingId] = useState<number | null>(null)
 
   useEffect(() => {
     window.api.dbQuery('scheduled_posts', 'status = ? OR status = ?', ['draft', 'scheduled']).then((data: any) => {
@@ -43,11 +45,21 @@ export default function ScheduledPosts({ profile, onBack }: { profile: any; onBa
   }, [])
 
   const handleDelete = async (id: number) => {
+    if (confirmId !== id) {
+      setConfirmId(id)
+      return
+    }
+    if (deletingId === id) return
+
+    setDeletingId(id)
     try {
       await window.api.dbDelete('scheduled_posts', id)
       setPosts(prev => prev.filter(p => p.id !== id))
     } catch (err) {
       console.error('Failed to delete scheduled post:', err)
+    } finally {
+      setConfirmId(null)
+      setDeletingId(null)
     }
   }
 
@@ -106,14 +118,34 @@ export default function ScheduledPosts({ profile, onBack }: { profile: any; onBa
                         {post.status}
                       </span>
                     </div>
-                    <button
-                      onClick={() => handleDelete(post.id)}
-                      className="flex items-center gap-1.5 text-xs font-medium text-red-400 hover:text-red-300 px-2.5 py-1 rounded-lg bg-red-500/10 hover:bg-red-500/20 border border-red-500/20 transition-all cursor-pointer"
-                      title="Remove scheduled post"
-                    >
-                      <Trash2 className="size-3.5" />
-                      <span>Remove</span>
-                    </button>
+                    {confirmId === post.id ? (
+                      <div className="flex items-center gap-1.5">
+                        <button
+                          onClick={() => handleDelete(post.id)}
+                          disabled={deletingId === post.id}
+                          className="flex items-center gap-1 text-xs font-semibold text-white px-2.5 py-1 rounded-lg bg-red-600 hover:bg-red-500 disabled:opacity-50 transition-all cursor-pointer shadow-sm"
+                          title="Confirm deletion"
+                        >
+                          <span>{deletingId === post.id ? 'Deleting...' : 'Confirm'}</span>
+                        </button>
+                        <button
+                          onClick={() => setConfirmId(null)}
+                          disabled={deletingId === post.id}
+                          className="text-xs text-zinc-400 hover:text-zinc-200 px-2 py-1 rounded-lg hover:bg-zinc-800 transition-colors cursor-pointer"
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    ) : (
+                      <button
+                        onClick={() => handleDelete(post.id)}
+                        className="flex items-center gap-1.5 text-xs font-medium text-red-400 hover:text-red-300 px-2.5 py-1 rounded-lg bg-red-500/10 hover:bg-red-500/20 border border-red-500/20 transition-all cursor-pointer"
+                        title="Remove scheduled post"
+                      >
+                        <Trash2 className="size-3.5" />
+                        <span>Remove</span>
+                      </button>
+                    )}
                   </div>
 
                   {/* Post preview card */}

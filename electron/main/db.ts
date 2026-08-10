@@ -419,7 +419,19 @@ export function insertRow(table: string, data: Record<string, any>) {
   return result.lastInsertRowid
 }
 
+const ALLOWED_DELETE_TABLES = new Set([
+  'scheduled_posts',
+  'social_content',
+  'quick_actions',
+  'memory_entries',
+  'chat_sessions',
+  'chat_messages'
+])
+
 export function deleteRow(table: string, id: number) {
+  if (!ALLOWED_DELETE_TABLES.has(table)) {
+    throw new Error(`Deletion not allowed for table: ${table}`)
+  }
   const result = getDb().prepare(`DELETE FROM ${table} WHERE id = ?`).run(id)
   return result.changes > 0
 }
