@@ -57,32 +57,44 @@ async function generateGeminiImage(prompt: string, filename: string): Promise<st
 
   logger.info('gemini-image', `generating: "${prompt.slice(0, 80)}" -> ${filename}`)
 
-  const interaction = await ai.interactions.create({
-    model: 'gemini-3.5-flash-lite-image',
-    store: false,
-    input: [{ type: 'user_input', content: [{ type: 'text', text: prompt }] }],
-  } as any)
+  const candidateModels = ['gemini-3.1-flash-image', 'gemini-3.1-flash-lite-image', 'gemini-2.5-flash-image']
+  let lastError: any = null
 
-  // The SDK exposes the last generated image via output_image.
-  const out = (interaction as any).output_image
-  const data = out?.data
-  if (!data) {
-    // Fall back to scanning steps for an image content block.
-    for (const s of (interaction as any).steps || []) {
-      for (const c of s?.content || []) {
-        if (c?.type === 'image' && c.data) {
-          const buffer = Buffer.from(c.data, 'base64')
-          return saveImage(buffer, filename)
+  for (const model of candidateModels) {
+    try {
+      const interaction = await ai.interactions.create({
+        model,
+        store: false,
+        input: [{ type: 'user_input', content: [{ type: 'text', text: prompt }] }],
+      } as any)
+
+      // The SDK exposes the last generated image via output_image.
+      const out = (interaction as any).output_image
+      const data = out?.data
+      if (data) {
+        const base64 = data.includes(',') ? data.split(',')[1] : data
+        const buffer = Buffer.from(base64, 'base64')
+        logger.info('gemini-image', `saved to ${filename} (${buffer.length} bytes) using ${model}`)
+        return saveImage(buffer, filename)
+      }
+
+      // Fall back to scanning steps for an image content block.
+      for (const s of (interaction as any).steps || []) {
+        for (const c of s?.content || []) {
+          if (c?.type === 'image' && c.data) {
+            const buffer = Buffer.from(c.data, 'base64')
+            logger.info('gemini-image', `saved to ${filename} (${buffer.length} bytes) using ${model}`)
+            return saveImage(buffer, filename)
+          }
         }
       }
+    } catch (err: any) {
+      lastError = err
+      logger.warn('gemini-image', `model ${model} failed: ${err.message}`)
     }
-    throw new Error('Gemini image generation returned no image')
   }
 
-  const base64 = data.includes(',') ? data.split(',')[1] : data
-  const buffer = Buffer.from(base64, 'base64')
-  logger.info('gemini-image', `saved to ${filename} (${buffer.length} bytes)`)
-  return saveImage(buffer, filename)
+  throw lastError || new Error('Gemini image generation returned no image')
 }
 
 function saveImage(buffer: Buffer, filename: string): string {

@@ -220,10 +220,10 @@ This document provides a comprehensive catalog of all AI agent tools available i
 - **Execution Mechanism:** Node `fetch()` with custom `Referer: https://x.com/` headers for X/twimg URLs, returning base64 buffer via `toModelOutput`.
 
 #### `generate_image`
-- **Description:** Generate marketing graphics using Gemini `gemini-3.5-flash-lite-image` with fallback to Puter.js (`gpt-image-2`).
+- **Description:** Generate marketing graphics using Gemini `gemini-3.1-flash-image` (with `gemini-3.1-flash-lite-image` / `gemini-2.5-flash-image` fallbacks) and secondary fallback to Puter.js (`gpt-image-2`).
 - **Parameters:** `prompt` (`string`), `filename` (`string`), `model` (`string`, optional Puter model).
 - **Execution Mechanism:**
-  1. Calls `GoogleGenAI.interactions.create` with `gemini-3.5-flash-lite-image`.
+  1. Calls `GoogleGenAI.interactions.create` with `gemini-3.1-flash-image` (falling back to other Gemini image models on failure).
   2. Saves generated buffer to `<userData>/media/<filename>`.
   3. On error, falls back to `puterClient.ai.txt2img({ prompt, model })`.
 

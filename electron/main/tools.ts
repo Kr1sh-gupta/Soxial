@@ -616,12 +616,12 @@ export function createTools(opts?: {
         filename: z.string().describe('Output filename with .png extension, e.g. twitter_hook_2026-06-23.png'),
         model: z.enum(['gpt-image-1-mini', 'gpt-image-1.5', 'gpt-image-1', 'gpt-image-2']).optional().describe('Fallback Puter.js image model if Gemini image generation fails.')
       }),
-      execute: async ({ prompt, filename }) => {
+      execute: async ({ prompt, filename, model }) => {
         let safeFilename = filename && filename.trim() ? filename.trim() : `generated_${Date.now()}.png`
         if (!safeFilename.endsWith('.png')) safeFilename += '.png'
         try {
           const { generateImage } = await import('./puter')
-          const path = await generateImage(prompt, safeFilename)
+          const path = await generateImage(prompt, safeFilename, undefined, model)
           return { success: true, path, filename: safeFilename, message: `Image saved to ${path}` }
         } catch (e: any) {
           return { error: e.message }
