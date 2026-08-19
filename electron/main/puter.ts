@@ -1,6 +1,6 @@
 import { GoogleGenAI } from '@google/genai'
 import { init, getAuthToken } from '@heyputer/puter.js/src/init.cjs'
-import { getProfile, updateProfile } from './db'
+import { getProfile, updateProfile, getApiKeys, updateApiKeyLastUsed } from './db'
 import { join } from 'path'
 import { mkdirSync, writeFileSync } from 'fs'
 import { app } from 'electron'
@@ -44,53 +44,98 @@ export async function puterSignIn(): Promise<{ success: boolean; error?: string 
   }
 }
 
-function getApiKey(): string {
+interface ApiKeyCandidate {
+  id?: number
+  name?: string
+  api_key: string
+  tier?: string
+}
+
+function getGoogleApiKeyCandidates(): ApiKeyCandidate[] {
+  const candidates: ApiKeyCandidate[] = []
+  const seen = new Set<string>()
+
+  // 1. Keys from api_keys table (pro tier first, then active)
+  try {
+    const dbKeys = getApiKeys('google')
+    const sortedDbKeys = [...dbKeys].sort((a, b) => {
+      if (a.tier === 'pro' && b.tier !== 'pro') return -1
+      if (b.tier === 'pro' && a.tier !== 'pro') return 1
+      return 0
+    })
+
+    for (const k of sortedDbKeys) {
+      if (k.api_key && !seen.has(k.api_key)) {
+        seen.add(k.api_key)
+        candidates.push({ id: k.id, name: k.name, api_key: k.api_key, tier: k.tier })
+      }
+    }
+  } catch {}
+
+  // 2. Profile key
   const profile = getProfile()
-  const apiKey = profile?.gemini_api_key || process.env.GEMINI_API_KEY
-  if (!apiKey) throw new Error('No Google AI Studio API key configured for image generation')
-  return apiKey
+  if (profile?.gemini_api_key && !seen.has(profile.gemini_api_key)) {
+    seen.add(profile.gemini_api_key)
+    candidates.push({ api_key: profile.gemini_api_key, name: 'Profile Key' })
+  }
+
+  // 3. Environment variable key
+  if (process.env.GEMINI_API_KEY && !seen.has(process.env.GEMINI_API_KEY)) {
+    seen.add(process.env.GEMINI_API_KEY)
+    candidates.push({ api_key: process.env.GEMINI_API_KEY, name: '.env Key' })
+  }
+
+  return candidates
 }
 
 async function generateGeminiImage(prompt: string, filename: string): Promise<string> {
-  const apiKey = getApiKey()
-  const ai = new GoogleGenAI({ apiKey })
+  const keyCandidates = getGoogleApiKeyCandidates()
+  if (keyCandidates.length === 0) {
+    throw new Error('No Google AI Studio API key configured for image generation')
+  }
 
-  logger.info('gemini-image', `generating: "${prompt.slice(0, 80)}" -> ${filename}`)
+  logger.info('gemini-image', `generating: "${prompt.slice(0, 80)}" -> ${filename} (evaluating ${keyCandidates.length} Google key(s))`)
 
   const candidateModels = ['gemini-3.1-flash-image', 'gemini-3.1-flash-lite-image', 'gemini-2.5-flash-image']
   let lastError: any = null
 
-  for (const model of candidateModels) {
-    try {
-      const interaction = await ai.interactions.create({
-        model,
-        store: false,
-        input: [{ type: 'user_input', content: [{ type: 'text', text: prompt }] }],
-      } as any)
+  for (const keyItem of keyCandidates) {
+    const ai = new GoogleGenAI({ apiKey: keyItem.api_key })
 
-      // The SDK exposes the last generated image via output_image.
-      const out = (interaction as any).output_image
-      const data = out?.data
-      if (data) {
-        const base64 = data.includes(',') ? data.split(',')[1] : data
-        const buffer = Buffer.from(base64, 'base64')
-        logger.info('gemini-image', `saved to ${filename} (${buffer.length} bytes) using ${model}`)
-        return saveImage(buffer, filename)
-      }
+    for (const model of candidateModels) {
+      try {
+        const interaction = await ai.interactions.create({
+          model,
+          store: false,
+          input: [{ type: 'user_input', content: [{ type: 'text', text: prompt }] }],
+        } as any)
 
-      // Fall back to scanning steps for an image content block.
-      for (const s of (interaction as any).steps || []) {
-        for (const c of s?.content || []) {
-          if (c?.type === 'image' && c.data) {
-            const buffer = Buffer.from(c.data, 'base64')
-            logger.info('gemini-image', `saved to ${filename} (${buffer.length} bytes) using ${model}`)
-            return saveImage(buffer, filename)
+        // The SDK exposes the last generated image via output_image.
+        const out = (interaction as any).output_image
+        const data = out?.data
+        if (data) {
+          const base64 = data.includes(',') ? data.split(',')[1] : data
+          const buffer = Buffer.from(base64, 'base64')
+          if (keyItem.id) updateApiKeyLastUsed(keyItem.id)
+          logger.info('gemini-image', `saved to ${filename} (${buffer.length} bytes) using ${model} with key ${keyItem.name || keyItem.id || 'primary'}`)
+          return saveImage(buffer, filename)
+        }
+
+        // Fall back to scanning steps for an image content block.
+        for (const s of (interaction as any).steps || []) {
+          for (const c of s?.content || []) {
+            if (c?.type === 'image' && c.data) {
+              const buffer = Buffer.from(c.data, 'base64')
+              if (keyItem.id) updateApiKeyLastUsed(keyItem.id)
+              logger.info('gemini-image', `saved to ${filename} (${buffer.length} bytes) using ${model} with key ${keyItem.name || keyItem.id || 'primary'}`)
+              return saveImage(buffer, filename)
+            }
           }
         }
+      } catch (err: any) {
+        lastError = err
+        logger.warn('gemini-image', `key ${keyItem.name || keyItem.id || 'primary'} with model ${model} failed: ${err.message}`)
       }
-    } catch (err: any) {
-      lastError = err
-      logger.warn('gemini-image', `model ${model} failed: ${err.message}`)
     }
   }
 
