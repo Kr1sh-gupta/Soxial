@@ -111,7 +111,11 @@ async function generatePuterImage(prompt: string, filename: string, model?: stri
     client = getPuterClient()
   } catch {
     logger.info('puter', 'no stored auth found, starting sign-in before image generation')
-    const auth = await puterSignIn()
+    const authPromise = puterSignIn()
+    const timeoutPromise = new Promise<{ success: boolean; error?: string }>((resolve) =>
+      setTimeout(() => resolve({ success: false, error: 'Puter sign-in timed out. Please complete sign-in in your browser or sign in to Puter to enable image generation.' }), 15000)
+    )
+    const auth = await Promise.race([authPromise, timeoutPromise])
     if (!auth.success) throw new Error(auth.error || 'Not signed in to Puter')
     client = getPuterClient()
   }
@@ -145,10 +149,21 @@ async function generatePuterImage(prompt: string, filename: string, model?: stri
 
 /** Generate an image with Gemini by default, falling back to Puter.js if Gemini fails. */
 export async function generateImage(prompt: string, filename: string, _mainWindow?: any, model?: string): Promise<string> {
+  let geminiError: string | null = null
   try {
     return await generateGeminiImage(prompt, filename)
   } catch (e: any) {
-    logger.warn('gemini-image', `Gemini image failed, falling back to Puter.js: ${e.message}`)
-    return generatePuterImage(prompt, filename, model)
+    geminiError = e.message || String(e)
+    logger.warn('gemini-image', `Gemini image failed, falling back to Puter.js: ${geminiError}`)
+  }
+
+  try {
+    return await generatePuterImage(prompt, filename, model)
+  } catch (e: any) {
+    logger.error('image-gen', `Both Gemini and Puter image generation failed. Gemini: ${geminiError}; Puter: ${e.message}`)
+    if (geminiError && (geminiError.includes('quota') || geminiError.includes('429') || geminiError.includes('limit: 0'))) {
+      throw new Error(`Image generation failed: Google Gemini API key has 0 image quota on free tier (requires pay-as-you-go billing in Google AI Studio). Puter.js fallback also failed: ${e.message}`)
+    }
+    throw new Error(`Image generation failed: ${geminiError || e.message}`)
   }
 }
