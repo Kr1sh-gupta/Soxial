@@ -1,5 +1,11 @@
 name: pr-agent review
 
+# Model IDs come from OpenCode Zen (https://opencode.ai/docs/zen); free
+# models rotate often, so switch them via repo variables without a commit.
+env:
+  ZEN_PRIMARY_MODEL: ${{ vars.ZEN_PRIMARY_MODEL || 'x-preview-f-free' }}
+  ZEN_FALLBACK_MODEL: ${{ vars.ZEN_FALLBACK_MODEL || 'big-pickle' }}
+
 concurrency:
   group: pr-agent-${{ github.event.pull_request.number }}
   cancel-in-progress: true
@@ -26,8 +32,8 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           OPENAI_KEY: ${{ secrets.ZEN_API_KEY }}
           OPENAI.API_BASE: "https://opencode.ai/zen/v1"
-          config.model: "openai/x-preview-f-free"
-          config.fallback_models: '["openai/big-pickle"]'
+          config.model: "openai/${{ env.ZEN_PRIMARY_MODEL }}"
+          config.fallback_models: ${{ format('["openai/{0}"]', env.ZEN_FALLBACK_MODEL) }}
           config.custom_model_max_tokens: "64000"
           config.custom_reasoning_model: "true"
           github_action_config.auto_review: "true"
