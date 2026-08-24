@@ -450,3 +450,55 @@ Audit log for system tool invocations and conversation turns.
 | `tool_args` | `TEXT` | - | `NULL` | Invoked tool parameters |
 | `tool_result` | `TEXT` | - | `NULL` | Invoked tool output |
 | `created_at` | `TEXT` | - | `datetime('now')` | Timestamp |
+
+---
+
+### 19. `onboarding_strategy_drafts`
+
+Isolated, versioned draft of the strategy an onboarding run produced. Active
+tables stay untouched until the user approves the draft in review (Plan 12
+commit transaction).
+
+| Column | Data Type | Constraints | Default | Description |
+|---|---|---|---|---|
+| `run_id` | `TEXT` | `PRIMARY KEY` | - | Owning onboarding run |
+| `version` | `INTEGER` | `NOT NULL` | `1` | Optimistic-concurrency version (bumped per write) |
+| `status` | `TEXT` | `NOT NULL, CHECK` | `'draft'` | Lifecycle (`draft`, `review`, `committed`, `discarded`) |
+| `base_snapshot_json` | `TEXT` | `NOT NULL` | - | Active strategy state snapshotted before any agent write |
+| `draft_json` | `TEXT` | `NOT NULL` | - | Redacted versioned `StrategyDraftDocument` |
+| `validation_json` | `TEXT` | - | `NULL` | Readiness result + recorded gaps captured at review entry |
+| `created_at` | `TEXT` | - | `datetime('now')` | Creation timestamp |
+| `updated_at` | `TEXT` | - | `datetime('now')` | Last write timestamp |
+| `reviewed_at` | `TEXT` | - | `NULL` | When review opened |
+| `committed_at` | `TEXT` | - | `NULL` | When the commit transaction succeeded |
+
+**Indexes:**
+- `idx_strategy_drafts_status_updated` ON `onboarding_strategy_drafts(status, updated_at DESC)`
+
+---
+
+### 20. `onboarding_enrichment_jobs`
+
+Durable background jobs that expand an approved strategy (hooks, targets,
+cadence notes, memory) after the user enters chat. One live job per run.
+
+| Column | Data Type | Constraints | Default | Description |
+|---|---|---|---|---|
+| `id` | `TEXT` | `PRIMARY KEY` | - | Job ID (`enj_...`) |
+| `run_id` | `TEXT` | `NOT NULL` | - | Owning committed run |
+| `status` | `TEXT` | `NOT NULL, CHECK` | `'pending'` | (`pending`, `running`, `succeeded`, `failed`, `cancelled`) |
+| `attempt` | `INTEGER` | `NOT NULL` | `0` | Attempts used |
+| `max_attempts` | `INTEGER` | `NOT NULL` | `3` | Retry ceiling |
+| `stage` | `TEXT` | `NOT NULL` | `'queued'` | Current stage marker for resume |
+| `last_error_code` | `TEXT` | - | `NULL` | Terminal failure code |
+| `last_error_message` | `TEXT` | - | `NULL` | Bounded redacted failure message |
+| `started_at` | `TEXT` | - | `NULL` | First execution start |
+| `updated_at` | `TEXT` | - | `datetime('now')` | Last update |
+| `completed_at` | `TEXT` | - | `NULL` | Completion timestamp |
+
+**Constraints:**
+- `UNIQUE(run_id, status)` — at most one pending/running/succeeded row per run
+
+**Indexes:**
+- `idx_enrichment_jobs_status_updated` ON `onboarding_enrichment_jobs(status, updated_at DESC)`
+- `idx_enrichment_jobs_run` ON `onboarding_enrichment_jobs(run_id)`

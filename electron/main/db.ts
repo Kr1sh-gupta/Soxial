@@ -450,6 +450,7 @@ export interface OnboardingRunRow {
   started_at: string
   updated_at: string
   completed_at: string | null
+  revision: number
 }
 
 export function saveOnboardingCheckpoint(runId: string, phase: string, status: string, checkpoint: unknown, errorCode?: string): void {
@@ -464,6 +465,48 @@ export function saveOnboardingCheckpoint(runId: string, phase: string, status: s
       updated_at = excluded.updated_at,
       completed_at = excluded.completed_at
   `).run(runId, phase, status, JSON.stringify(checkpoint), errorCode ?? null, status)
+}
+
+/**
+ * Revision-guarded checkpoint write. A save is rejected when the stored
+ * revision is already at or beyond the incoming one, so a late writer (for
+ * example a timed-out interaction racing a submitted answer) cannot clobber
+ * newer state. Returns false when the write was rejected.
+ */
+export function saveOnboardingCheckpointAtRevision(
+  runId: string,
+  phase: string,
+  status: string,
+  checkpoint: { revision: number },
+  errorCode?: string,
+): boolean {
+  const revision = checkpoint.revision
+  const result = getDb().prepare(`
+    INSERT INTO onboarding_runs (run_id, phase, status, checkpoint_json, last_error_code, revision, updated_at, completed_at)
+    VALUES (@runId, @phase, @status, @json, @errorCode, @revision, datetime('now'),
+            CASE WHEN @status IN ('complete', 'failed', 'cancelled') THEN datetime('now') ELSE NULL END)
+    ON CONFLICT(run_id) DO UPDATE SET
+      phase = excluded.phase,
+      status = excluded.status,
+      checkpoint_json = excluded.checkpoint_json,
+      last_error_code = excluded.last_error_code,
+      revision = excluded.revision,
+      updated_at = excluded.updated_at,
+      completed_at = excluded.completed_at
+    WHERE onboarding_runs.revision < excluded.revision
+  `).run({
+    runId,
+    phase,
+    status,
+    json: JSON.stringify(checkpoint),
+    errorCode: errorCode ?? null,
+    revision,
+  })
+  return result.changes > 0
+}
+
+export function getOnboardingRun(runId: string): OnboardingRunRow | null {
+  return (getDb().prepare('SELECT * FROM onboarding_runs WHERE run_id = ?').get(runId) as OnboardingRunRow | undefined) ?? null
 }
 
 export function getLatestResumableOnboardingRun(): OnboardingRunRow | null {

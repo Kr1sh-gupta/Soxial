@@ -2,6 +2,14 @@ import { streamText, generateText as aiGenerateText, isStepCount } from 'ai'
 import { createGoogle } from '@ai-sdk/google'
 import { getProfile, getApiTier, getAvailableApiKeyForModel, markModelExhausted, isModelExhaustedForAllKeys, updateApiKeyLastUsed, getChatSessionSteps, updateChatSessionSteps, getDb } from './db'
 import { createTools } from './tools'
+import { SAFE_CAPABILITIES, filterToolsByCapability, listDeniedTools } from './tool-capabilities'
+import { PendingInteractionRegistry } from './pending-interaction'
+import { KnownIdentity, recommendedQuestionCountFromAssessment, validateInterviewQuestions } from './interview-validation'
+import type { EvidenceAssessment } from './onboarding-run'
+import { createDraftScopedTools } from './draft-tools'
+
+type GapArtifact = 'baseline_metrics' | 'audience_memory'
+type ToolMap = Record<string, { description: string; parameters: any; execute: (args: any) => Promise<any> }>
 import { logger } from './log'
 import { ipcMain } from 'electron'
 import { z } from 'zod'
@@ -104,6 +112,13 @@ export interface AgentOptions {
   fallbackChain?: string[]
   skipRateLimitCheck?: boolean
   onModelSwitch?: (model: string, index: number, total: number) => void
+  /**
+   * Base ModelMessages to continue from, overriding the AppMessage rebuild.
+   * Used to resume onboarding runs from their persisted model transcript.
+   */
+  seedModelMessages?: unknown[]
+  /** Receives the accumulated ModelMessages when the run settles. */
+  onModelMessages?: (messages: unknown[]) => void
 }
 
 export interface AgentConfig {
@@ -218,13 +233,23 @@ export function getAgentConfig(options?: AgentOptions): AgentConfig {
 
 // ─── ONBOARDING AGENT ───────────────────────────────────────────────────────
 
-const pendingQuestionBatch = new Map<
-  string,
-  (answers: { id: string; answer: string | string[] }[]) => void
->()
+type OnboardingAnswers = { id: string; answer: string | string[] }[]
 
-export function clearPendingQuestions() {
-  pendingQuestionBatch.clear()
+const pendingQuestionBatch = new PendingInteractionRegistry<OnboardingAnswers>()
+
+const confidenceSchema = z.object({
+  confidence: z.number().min(0).max(1).describe('0.0-1.0 confidence in this category'),
+  evidence: z.array(z.string()).describe('What gathered evidence supports the rating'),
+  contradiction: z.string().optional().describe('Where two evidence sources disagree'),
+})
+
+/** Settle every open question so no agent run is left waiting forever. */
+export function clearPendingQuestions(reason = 'cleared') {
+  return pendingQuestionBatch.settleAll({ status: 'cancelled', reason })
+}
+
+export function cancelPendingQuestionsForRun(runId: string, reason: string) {
+  return pendingQuestionBatch.settleRun(runId, { status: 'cancelled', reason })
 }
 
 let answerListenerInstalled = false
@@ -238,13 +263,9 @@ export function installOnboardingAnswerListener() {
       {
         id,
         answers,
-      }: { id: string; answers: { id: string; answer: string | string[] }[] },
+      }: { id: string; answers: OnboardingAnswers },
     ) => {
-      const resolve = pendingQuestionBatch.get(id)
-      if (resolve) {
-        pendingQuestionBatch.delete(id)
-        resolve(answers)
-      }
+      pendingQuestionBatch.resolve(id, answers)
     },
   )
 }
@@ -260,13 +281,79 @@ export function createOnboardingTools(
     }[]
   }) => void,
   platforms?: { twitter?: boolean; reddit?: boolean },
+  interaction?: {
+    runId?: string
+    /** When set, strategy reads merge and strategy writes go to this run's draft. */
+    draftRunId?: string
+    timeoutMs?: number
+    onTimeout?: (batchId: string) => void
+    /** True once this run has already asked its interview. */
+    isInterviewRequested?: () => boolean
+    markInterviewRequested?: () => void
+    knownIdentity?: KnownIdentity
+    recordGap?: (gap: { artifact: GapArtifact; reason: string }) => void
+    /** Persists the agent's evidence assessment into the checkpoint. */
+    recordAssessment?: (assessment: EvidenceAssessment) => void
+  },
 ) {
+  // Onboarding builds strategy; it never publishes or changes accounts. The
+  // capability filter is the enforcement boundary — prompt rules are only
+  // defence in depth, so a prompt-ignoring model still cannot act publicly.
   const base = createTools({ platforms })
+  const denied = listDeniedTools(base, SAFE_CAPABILITIES)
+  if (denied.length > 0) {
+    logger.info('onboarding', `withheld ${denied.length} mutating tool(s) from onboarding agent`, denied)
+  }
+  let safeBase = filterToolsByCapability(base, SAFE_CAPABILITIES)
+
+  // Plan 11: when the run carries a draft, every strategy read returns merged
+  // base ⊕ draft state and every strategy write lands in the draft document.
+  // Active tables stay untouched until the Plan 12 commit transaction.
+  if (interaction?.draftRunId) {
+    safeBase = createDraftScopedTools(safeBase as ToolMap, getDb(), interaction.draftRunId) as typeof safeBase
+  }
+
   return {
-    ...base,
+    ...safeBase,
+
+    record_onboarding_gap: {
+      description:
+        'Record that a required onboarding artifact genuinely cannot be produced, with the reason. Use this ONLY when the data does not exist (for example the account exposes no metrics). Never use it to skip work you could do, and never invent data instead.',
+      parameters: z.object({
+        artifact: z
+          .enum(['baseline_metrics', 'audience_memory'])
+          .describe('Which required artifact is unavailable'),
+        reason: z.string().min(3).describe('Why the data is genuinely unavailable'),
+      }),
+      execute: async ({ artifact, reason }: { artifact: GapArtifact; reason: string }) => {
+        interaction?.recordGap?.({ artifact, reason })
+        logger.info('onboarding', `recorded gap for ${artifact}: ${reason}`)
+        return { success: true, artifact, reason }
+      },
+    },
+
+    record_evidence_assessment: {
+      description:
+        'Record your confidence (0.0-1.0) in the six strategic categories AFTER analyzing the gathered evidence and BEFORE deciding whether to interview: positioning, audience, voice, businessOutcome, timeCapacity, riskTolerance. The result tells you the recommended question budget for this run.',
+      parameters: z.object({
+        positioning: confidenceSchema,
+        audience: confidenceSchema,
+        voice: confidenceSchema,
+        businessOutcome: confidenceSchema,
+        timeCapacity: confidenceSchema,
+        riskTolerance: confidenceSchema,
+      }),
+      execute: async (assessment: EvidenceAssessment) => {
+        interaction?.recordAssessment?.(assessment)
+        const budget = recommendedQuestionCountFromAssessment(assessment)
+        logger.info('onboarding', `evidence assessment recorded (budget: ${budget ? `${budget.min}-${budget.max}` : 'unrated'})`)
+        return { success: true, recommendedQuestions: budget }
+      },
+    },
+
     ask_user_questions: {
       description:
-        'Ask the user ALL interview questions at once. The UI shows them with prev/next navigation and submits all answers together. Call this ONCE with every question you need. Never call it more than once.',
+        'Ask the user ALL interview questions at once. The UI shows them with prev/next navigation and submits all answers together. Call this AT MOST ONCE with every question you genuinely need. Ask only about gaps the gathered evidence cannot answer: 2-4 questions when the account has a rich history, 5-8 when evidence is thin. Skip the call entirely if the evidence already answers everything.',
       parameters: z.object({
         questions: z
           .array(
@@ -284,7 +371,7 @@ export function createOnboardingTools(
                 .describe('Answer options for single/multi types'),
             }),
           )
-          .describe('ALL questions to ask the user (5-8 recommended)'),
+          .describe('ALL questions to ask the user. Ask only genuine evidence gaps (2-8, fewer when evidence is strong).'),
       }),
       execute: async ({
         questions,
@@ -296,27 +383,52 @@ export function createOnboardingTools(
           options?: string[]
         }[]
       }) => {
-        return new Promise<{
-          answers: {
-            id: string
-            question: string
-            answer: string | string[]
-          }[]
-        }>((resolve) => {
-          const batchId = `onb_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
-          pendingQuestionBatch.set(batchId, (rawAnswers) => {
-            const formatted = rawAnswers.map((a) => {
-              const q = questions.find((qq) => qq.id === a.id)
-              return { id: a.id, question: q?.text || a.id, answer: a.answer }
-            })
-            resolve({ answers: formatted })
-          })
-          sendQuestions({ batchId, questions })
-          logger.info(
-            'onboarding',
-            `batch questions sent: ${questions.length} questions (id: ${batchId})`,
-          )
+        // Enforced here, not in the prompt: one interview per run, and every
+        // question must be well formed and not already answered by the form.
+        const validation = validateInterviewQuestions(questions, {
+          alreadyRequested: interaction?.isInterviewRequested?.() ?? false,
+          known: interaction?.knownIdentity,
         })
+        if (!validation.ok) {
+          logger.warn('onboarding', `ask_user_questions rejected: ${validation.code}`)
+          return { error: validation.error, code: validation.code }
+        }
+        const validQuestions = validation.questions!
+        interaction?.markInterviewRequested?.()
+
+        const batchId = `onb_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
+        const wait = pendingQuestionBatch.wait(batchId, {
+          runId: interaction?.runId,
+          timeoutMs: interaction?.timeoutMs,
+          onTimeout: () => interaction?.onTimeout?.(batchId),
+        })
+
+        sendQuestions({ batchId, questions: validQuestions })
+        logger.info(
+          'onboarding',
+          `batch questions sent: ${validQuestions.length} questions (id: ${batchId})`,
+        )
+
+        const outcome = await wait
+
+        if (outcome.status === 'answered') {
+          return {
+            answers: outcome.value.map((a) => {
+              const q = validQuestions.find((qq) => qq.id === a.id)
+              return { id: a.id, question: q?.text || a.id, answer: a.answer }
+            }),
+          }
+        }
+
+        // Paused or cancelled: the run is aborted by the caller. Return a
+        // typed result instead of hanging the tool loop forever.
+        logger.info('onboarding', `question batch ${batchId} ended without answers (${outcome.status})`)
+        return {
+          error: outcome.status === 'timeout'
+            ? 'The user did not answer in time. Onboarding is paused.'
+            : 'The interview was cancelled.',
+          status: outcome.status,
+        }
       },
     },
   }
@@ -324,13 +436,10 @@ export function createOnboardingTools(
 
 // ─── CHAT QUESTION (ask_user) ───────────────────────────────────────────────
 
-const pendingChatQuestions = new Map<
-  string,
-  (answer: string | string[]) => void
->()
+const pendingChatQuestions = new PendingInteractionRegistry<string | string[]>()
 
-export function clearPendingChatQuestions() {
-  pendingChatQuestions.clear()
+export function clearPendingChatQuestions(reason = 'cleared') {
+  return pendingChatQuestions.settleAll({ status: 'cancelled', reason })
 }
 
 let chatAnswerListenerInstalled = false
@@ -340,11 +449,7 @@ export function installChatAnswerListener() {
   ipcMain.on(
     'chat:answer',
     (_e, { id, answer }: { id: string; answer: string | string[] }) => {
-      const resolve = pendingChatQuestions.get(id)
-      if (resolve) {
-        pendingChatQuestions.delete(id)
-        resolve(answer)
-      }
+      pendingChatQuestions.resolve(id, answer)
     },
   )
 }
@@ -439,6 +544,7 @@ export function createChatTools(
     options?: string[]
   }) => void,
   platforms?: { twitter?: boolean; reddit?: boolean },
+  interaction?: { timeoutMs?: number },
 ) {
   const base = createTools({ defaultMax: 10, platforms })
   return {
@@ -465,11 +571,18 @@ export function createChatTools(
       }) => {
         const normalized = normalizeChatQuestion({ text, type, options })
         const id = `chatq_${Date.now()}`
-        return new Promise<{ answer: string | string[] }>((resolve) => {
-          pendingChatQuestions.set(id, (answer) => resolve({ answer }))
-          sendQuestion({ id, ...normalized })
-          logger.info('chat', `ask_user: ${id} — ${normalized.text}`)
-        })
+        const wait = pendingChatQuestions.wait(id, { timeoutMs: interaction?.timeoutMs })
+        sendQuestion({ id, ...normalized })
+        logger.info('chat', `ask_user: ${id} — ${normalized.text}`)
+
+        const outcome = await wait
+        if (outcome.status === 'answered') return { answer: outcome.value }
+        return {
+          error: outcome.status === 'timeout'
+            ? 'The user did not answer in time.'
+            : 'The question was cancelled.',
+          status: outcome.status,
+        }
       },
     },
   }
@@ -742,7 +855,7 @@ function isAuthError(e: any): boolean {
 const MAX_TRANSIENT_RETRIES = 5
 
 // Sleep that resolves early if the run is aborted, so backoff waits don't block teardown.
-function abortableSleep(ms: number, ac?: AbortController): Promise<void> {
+export function abortableSleep(ms: number, ac?: AbortController): Promise<void> {
   return new Promise((resolve) => {
     if (ac?.signal.aborted) { resolve(); return }
     const t = setTimeout(resolve, ms)
@@ -753,24 +866,45 @@ function abortableSleep(ms: number, ac?: AbortController): Promise<void> {
 // ─── Main agent loop — AI SDK streamText with multi-step tools ──────────────
 // streamText with stopWhen handles the entire tool-calling loop internally.
 // We wrap it with model fallback + API key rotation for rate limit resilience.
-export async function runAgent(
-  messages: AppMessage[],
-  onChunk: (text: string) => void,
-  onToolCall: (name: string, args: any) => void,
-  onToolResult: (name: string, result: any) => void,
-  onDone: (fullText: string) => void,
-  onError: (error: string) => void,
-  onReasoning?: (text: string) => void,
-  onTransientRetry?: (info: { attempt: number; maxAttempts: number; backoffMs: number; model: string }) => void,
-  options?: AgentOptions,
-  toolsOverride?: Record<string, any>,
-  systemPromptOverride?: string,
-  abortController?: AbortController,
-  drainInjectedMessages?: () => AppMessage[],
-  onInjectedMessages?: (messages: AppMessage[]) => void,
-  sessionId?: number,
-  onModelSwitch?: (model: string) => void,
-) {
+/** One streaming agent run: input messages, callbacks, and configuration. */
+export interface RunAgentRequest {
+  messages: AppMessage[]
+  onDone: (fullText: string) => void
+  onError: (error: string) => void
+  onChunk?: (text: string) => void
+  onToolCall?: (name: string, args: any) => void
+  onToolResult?: (name: string, result: any) => void
+  onReasoning?: (text: string) => void
+  onTransientRetry?: (info: { attempt: number; maxAttempts: number; backoffMs: number; model: string }) => void
+  options?: AgentOptions
+  toolsOverride?: Record<string, any>
+  systemPromptOverride?: string
+  abortController?: AbortController
+  drainInjectedMessages?: () => AppMessage[]
+  onInjectedMessages?: (messages: AppMessage[]) => void
+  sessionId?: number
+  onModelSwitch?: (model: string) => void
+}
+
+export async function runAgent(request: RunAgentRequest): Promise<void> {
+  const {
+    messages,
+    onDone,
+    onError,
+    onChunk = () => {},
+    onToolCall = () => {},
+    onToolResult = () => {},
+    onReasoning,
+    onTransientRetry,
+    options,
+    toolsOverride,
+    systemPromptOverride,
+    abortController,
+    drainInjectedMessages,
+    onInjectedMessages,
+    sessionId,
+    onModelSwitch,
+  } = request
   let fallbackChain = options?.fallbackChain || (getApiTier().tier === 'pro' ? CHAT_MODEL_FALLBACK_PRO : CHAT_MODEL_FALLBACK_FREE)
   // Respect user-selected model: move it to front of fallback chain
   if (options?.model) {
@@ -794,7 +928,12 @@ export async function runAgent(
   const lastMsg = messages[messages.length - 1]
   let baseMessages: any[]
 
-  if (stored && stored.steps.length > 0 && stored.userCount === userCount - 1 && lastMsg?.role === 'user') {
+  if (options?.seedModelMessages && options.seedModelMessages.length > 0) {
+    // Resume path: continue from the persisted model transcript exactly,
+    // with its tool-call round-trips intact.
+    baseMessages = options.seedModelMessages as any[]
+    logger.info('agent', `continuing from ${baseMessages.length} seeded model message(s)`)
+  } else if (stored && stored.steps.length > 0 && stored.userCount === userCount - 1 && lastMsg?.role === 'user') {
     // Normal case: stored has the previous turn, append the new user message.
     const newUserMsgs = await toModelMessages([lastMsg])
     baseMessages = [...stored.steps, ...newUserMsgs]
@@ -977,12 +1116,17 @@ export async function runAgent(
           logger.info('agent', `done — ${fullText.length} chars total`)
 
           // Persist accumulated messages for next turn's round-trip.
+          let responseMsgs: any[] = []
+          try {
+            responseMsgs = await result.responseMessages
+          } catch { /* stream produced no response messages */ }
+          const finalMessages = [...modelMessages, ...responseMsgs]
           if (sessionId != null) {
             try {
-              const responseMsgs = await result.responseMessages
-              updateChatSessionSteps(sessionId, [...modelMessages, ...responseMsgs], userCount)
+              updateChatSessionSteps(sessionId, finalMessages, userCount)
             } catch (e) { logger.error('agent', 'failed to persist steps', e) }
           }
+          options?.onModelMessages?.(finalMessages)
 
           onDone(fullText)
           return
@@ -1005,6 +1149,9 @@ export async function runAgent(
                 logger.info('agent', `preserved ${progressMsgs.length} response message(s) from failed attempt (total: ${modelMessages.length})`)
               }
             } catch { /* stream produced no response messages */ }
+            // Best effort: hand the partial transcript to the caller so a
+            // paused/failed run can still be resumed from real model state.
+            options?.onModelMessages?.(modelMessages)
           }
 
           // Progress was made (tool calls/text emitted before the error) → the API IS

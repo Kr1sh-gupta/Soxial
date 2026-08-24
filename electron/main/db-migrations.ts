@@ -75,6 +75,66 @@ export const migrations: Migration[] = [
       }
     },
   },
+  {
+    version: 6,
+    name: 'add-onboarding-checkpoint-revision',
+    up: (db) => {
+      const columns = db.pragma('table_info(onboarding_runs)') as Array<{ name: string }>
+      if (!columns.some(column => column.name === 'revision')) {
+        db.exec('ALTER TABLE onboarding_runs ADD COLUMN revision INTEGER NOT NULL DEFAULT 0')
+      }
+    },
+  },
+  {
+    version: 7,
+    name: 'add-onboarding-strategy-drafts',
+    up: (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS onboarding_strategy_drafts (
+          run_id TEXT PRIMARY KEY,
+          version INTEGER NOT NULL DEFAULT 1,
+          status TEXT NOT NULL DEFAULT 'draft'
+            CHECK (status IN ('draft', 'review', 'committed', 'discarded')),
+          base_snapshot_json TEXT NOT NULL,
+          draft_json TEXT NOT NULL,
+          validation_json TEXT,
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+          reviewed_at TEXT,
+          committed_at TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_strategy_drafts_status_updated
+          ON onboarding_strategy_drafts(status, updated_at DESC);
+      `)
+    },
+  },
+  {
+    version: 8,
+    name: 'add-onboarding-enrichment-jobs',
+    up: (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS onboarding_enrichment_jobs (
+          id TEXT PRIMARY KEY,
+          run_id TEXT NOT NULL,
+          status TEXT NOT NULL DEFAULT 'pending'
+            CHECK (status IN ('pending', 'running', 'succeeded', 'failed', 'cancelled')),
+          attempt INTEGER NOT NULL DEFAULT 0,
+          max_attempts INTEGER NOT NULL DEFAULT 3,
+          stage TEXT NOT NULL DEFAULT 'queued',
+          last_error_code TEXT,
+          last_error_message TEXT,
+          started_at TEXT,
+          updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+          completed_at TEXT,
+          UNIQUE(run_id, status)
+        );
+        CREATE INDEX IF NOT EXISTS idx_enrichment_jobs_status_updated
+          ON onboarding_enrichment_jobs(status, updated_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_enrichment_jobs_run
+          ON onboarding_enrichment_jobs(run_id);
+      `)
+    },
+  },
 ]
 
 export function runMigrations(db: Database.Database): void {

@@ -1,7 +1,7 @@
 "use client";
 
-import { useState, useEffect, useRef } from 'react'
-import { Check, Sparkles, ArrowRight, RefreshCw, ShieldAlert, Search as SearchIcon, Globe as GlobeIcon, Image as ImageIcon, AtSign, List, Eye, Send, CornerUpLeft, Newspaper, Heart, Repeat2, Bookmark, UserPlus, Info, Layers, BookOpen, MessageCircle, BadgeCheck, Flame, ThumbsUp, Database, Lightbulb, ShieldCheck, Gauge, Crosshair, SquarePen, RotateCcw, CalendarClock, Save, Download, Briefcase, Users, Package, Target, FileText, Trash2, TrendingUp, MessageSquare, Plus, KeyRound } from 'lucide-react'
+import { useState, useEffect, useMemo, useRef } from 'react'
+import { Check, Sparkles, ArrowRight, ArrowLeft, ChevronDown, RefreshCw, ShieldAlert, Search as SearchIcon, Globe as GlobeIcon, Image as ImageIcon, AtSign, List, Eye, Send, CornerUpLeft, Newspaper, Heart, Repeat2, Bookmark, UserPlus, Info, Layers, BookOpen, MessageCircle, BadgeCheck, Flame, ThumbsUp, Database, Lightbulb, ShieldCheck, Gauge, Crosshair, SquarePen, RotateCcw, CalendarClock, Save, Download, Briefcase, Users, Package, Target, FileText, Trash2, TrendingUp, MessageSquare, Plus, KeyRound } from 'lucide-react'
 import { motion, AnimatePresence } from 'motion/react'
 import { Message, MessageContent } from 'src/components/ai-elements/message'
 import { ChainOfThoughtStep } from 'src/components/ai-elements/chain-of-thought'
@@ -11,10 +11,32 @@ import {
 import { RichContent } from 'src/components/rich-content'
 import { Reasoning, ReasoningTrigger, ReasoningContent } from 'src/components/ai-elements/reasoning'
 import { QuestionInput, QuestionData } from 'src/components/ui/question-input'
+import { StrategyReview } from './StrategyReview'
+import type { OnboardingEvent } from 'src/types/onboarding-events'
+import { createOnboardingEventGate, OnboardingEventGate } from 'src/types/onboarding-events'
+import {
+  ACCOUNT_ANALYSIS_DISCLOSURE,
+  IdentityStage,
+  canAdvanceIdentityStage,
+  getIdentityStageActionLabel,
+  getOptionalStepActionLabel,
+  parseResumeCheckpoint,
+} from './onboarding-steps'
 import { AppLogo } from 'src/components/ui/app-logo'
+import { MountainVideo } from 'src/components/ui/mountain-video'
 import { ErrorBoundary } from 'src/components/ui/error-boundary'
 import { TransientRetryStep } from 'src/components/ui/transient-retry-step'
 import { OperationalError } from 'src/components/ui/operational-error'
+import { Button } from 'src/components/ui/button'
+import { GradientButton } from 'src/components/ui/gradient-button'
+import { Autocomplete, type AutocompleteItemData } from 'src/components/ui/autocomplete'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuTrigger,
+} from 'src/components/ui/dropdown'
 import { cn } from 'src/lib/utils'
 import { getToolLabel, getToolCallDescription } from 'src/lib/tool-labels'
 import { useOnboardingForm } from 'src/features/onboarding/use-onboarding-form'
@@ -31,21 +53,6 @@ const GOAL_ICONS: Record<string, any> = {
   'Thought leadership': Lightbulb,
   'Product promotion': Package,
   'Community building': Heart,
-}
-
-function parseResumeCheckpoint(checkpointJson: string): { runId: string; messages: any[] } | null {
-  try {
-    const checkpoint = JSON.parse(checkpointJson)
-    if (
-      checkpoint?.version !== 1
-      || typeof checkpoint.runId !== 'string'
-      || !Array.isArray(checkpoint.messages)
-      || checkpoint.messages.some((message: any) => !message || typeof message.role !== 'string' || (typeof message.content !== 'string' && message.content !== null))
-    ) return null
-    return { runId: checkpoint.runId, messages: checkpoint.messages }
-  } catch {
-    return null
-  }
 }
 
 function XLogo({ className }: { className?: string }) {
@@ -118,6 +125,12 @@ const childVariants = {
 
 export default function Onboarding({ onComplete }: { onComplete: (sessionId?: number) => void }) {
   const { step, setStep, formData, update } = useOnboardingForm()
+  const [identityStartStage, setIdentityStartStage] = useState<'name' | 'goal'>('name')
+
+  const startIdentity = (stage: 'name' | 'goal') => {
+    setIdentityStartStage(stage)
+    setStep(1)
+  }
 
   return (
     <div className="flex h-full min-h-screen bg-[#050507]">
@@ -133,13 +146,15 @@ export default function Onboarding({ onComplete }: { onComplete: (sessionId?: nu
             exit="exit"
             className={step === 4
               ? "flex-1 flex flex-col h-full relative overflow-hidden"
+              : step === 0
+              ? "w-full flex-1 flex flex-col"
               : "max-w-[720px] mx-auto px-8 py-20 w-full"
             }
           >
-            {step === 0 && <StepWelcome onNext={() => setStep(1)} />}
-            {step === 1 && <StepIdentity formData={formData} update={update} onNext={() => setStep(2)} />}
-            {step === 2 && <StepApiKey formData={formData} update={update} onBack={() => setStep(1)} onNext={() => setStep(3)} />}
-            {step === 3 && <StepPlatforms formData={formData} update={update} onBack={() => setStep(2)} onNext={() => setStep(4)} />}
+            {step === 0 && <StepWelcome onNext={() => startIdentity('name')} />}
+            {step === 1 && <StepIdentity initialStage={identityStartStage} formData={formData} update={update} onBack={() => setStep(0)} onNext={() => setStep(2)} />}
+            {step === 2 && <StepApiKey formData={formData} update={update} onBack={() => startIdentity('goal')} onNext={() => setStep(3)} />}
+            {step === 3 && <StepAccountAnalysisInfo formData={formData} update={update} onBack={() => setStep(2)} onNext={() => setStep(4)} />}
             {step === 4 && (
               <ErrorBoundary>
                 <StepAiOnboarding formData={formData} onComplete={onComplete} onBack={() => setStep(3)} />
@@ -152,24 +167,29 @@ export default function Onboarding({ onComplete }: { onComplete: (sessionId?: nu
   )
 }
 
-function Input({ label, value, onChange, placeholder, type = 'text', hint, icon: Icon }: any) {
+function Input({ label, value, onChange, placeholder, type = 'text', hint, icon: Icon, name, autoComplete, ariaLabel, autoFocus, onKeyDown }: any) {
   return (
-    <div className="space-y-2">
-      <label className="block text-[10px] uppercase tracking-[0.16em] text-zinc-500 font-bold block ml-1">{label}</label>
-      <div className="relative flex items-center group">
+    <div className={cn(label || hint ? 'space-y-2' : '')}>
+      {label && <label className="ml-1 block text-[10px] font-bold uppercase tracking-[0.16em] text-zinc-500">{label}</label>}
+      <div className="group relative flex h-11 items-center rounded-xl border border-input/60 bg-card px-4 shadow-sm transition-[background-color,border-color,box-shadow,border-radius] hover:border-input focus-within:rounded-[1.25rem] focus-within:border-input">
         <input
           type={type}
+          name={name}
+          autoComplete={autoComplete}
+          aria-label={ariaLabel}
+          autoFocus={autoFocus}
           value={value || ''}
           onChange={(e) => onChange(e.target.value)}
+          onKeyDown={onKeyDown}
           placeholder={placeholder}
           className={cn(
-            "w-full bg-[#040406]/50 hover:bg-[#040406]/80 focus:bg-black/90 border border-white/[0.05] hover:border-white/[0.08] focus:border-blue-500/40 rounded-xl px-4 py-3.5 text-sm text-white placeholder:text-zinc-700 outline-none focus:outline-none transition-all shadow-[inset_0_1.5px_3px_rgba(0,0,0,0.9)] focus:ring-1 focus:ring-blue-500/10",
-            Icon ? "pl-11" : "px-4"
+            "h-full w-full bg-transparent text-sm text-foreground outline-none placeholder:text-muted-foreground",
+            Icon ? "pl-8" : ""
           )}
         />
-        {Icon && <Icon className="size-4 text-zinc-600 group-focus-within:text-blue-500/50 absolute left-4 transition-colors" />}
+        {Icon && <Icon className="absolute left-3 size-4 text-zinc-600 transition-colors group-focus-within:text-zinc-400" />}
       </div>
-      {hint && <p className="mt-2 text-xs text-zinc-500/50 ml-1">{hint}</p>}
+      {hint && <p className="ml-1 mt-2 text-xs text-zinc-500">{hint}</p>}
     </div>
   )
 }
@@ -177,227 +197,283 @@ function Input({ label, value, onChange, placeholder, type = 'text', hint, icon:
 function Textarea({ label, value, onChange, placeholder, hint }: any) {
   return (
     <div className="space-y-2">
-      <label className="block text-[10px] uppercase tracking-[0.16em] text-zinc-500 font-bold block ml-1">{label}</label>
-      <div className="relative flex items-center">
+      <label className="ml-1 block text-[10px] font-bold uppercase tracking-[0.16em] text-zinc-500">{label}</label>
+      <div className="relative flex items-center rounded-2xl border border-white/[0.06] bg-[#0c0c10]/70 px-3 py-2.5 shadow-[0_8px_30px_rgba(0,0,0,0.18)] transition-[background-color,border-color,box-shadow] hover:border-white/[0.1] focus-within:border-white/[0.14] focus-within:bg-[#0e0e13] focus-within:ring-1 focus-within:ring-white/[0.06]">
         <textarea
           value={value || ''}
           onChange={(e) => onChange(e.target.value)}
           placeholder={placeholder}
           rows={3}
-          className="w-full bg-[#040406]/50 hover:bg-[#040406]/80 focus:bg-black/90 border border-white/[0.05] hover:border-white/[0.08] focus:border-blue-500/40 rounded-xl px-4 py-3.5 text-sm text-white placeholder:text-zinc-700 outline-none focus:outline-none transition-all shadow-[inset_0_1.5px_3px_rgba(0,0,0,0.9)] focus:ring-1 focus:ring-blue-500/10 resize-none"
+          className="w-full resize-none bg-transparent px-1 py-1 text-[15px] leading-6 text-white outline-none placeholder:text-zinc-600"
         />
       </div>
-      {hint && <p className="mt-2 text-xs text-zinc-500/50 ml-1">{hint}</p>}
+      {hint && <p className="ml-1 mt-2 text-xs text-zinc-500">{hint}</p>}
     </div>
   )
 }
 
 function PrimaryButton({ children, onClick, disabled, className = '' }: { children: React.ReactNode; onClick: () => void; disabled?: boolean; className?: string }) {
   return (
-    <motion.button
+    <Button
+      variant="default"
+      size="lg"
+      shape="round"
+      scaleOnPress
+      depthShadow
       onClick={onClick}
       disabled={disabled}
-      whileTap={{ scale: 0.96 }}
-      className={`group flex items-center justify-center gap-3 rounded-full text-[13px] font-bold disabled:opacity-25 disabled:pointer-events-none
-      transition-all duration-300 hover:bg-zinc-100 ${className}`}
+      className={cn("w-full justify-between", className)}
     >
-      <span>{children}</span>
-      <span className="w-7 h-7 rounded-full bg-zinc-900/15 flex items-center justify-center transition-transform duration-300 group-hover:translate-x-0.5">
-        <ArrowRight className="size-3.5 stroke-[2.5]" />
-      </span>
-    </motion.button>
+      {children}
+    </Button>
   )
 }
 
 function StepWelcome({ onNext }: { onNext: () => void }) {
   return (
-    <div className="flex flex-col items-center text-center py-8">
-      <motion.div variants={childVariants} className="mb-8">
-        <div className="size-16 rounded-2xl bg-white/[0.02] border border-white/[0.05] shadow-[0_8px_32px_rgba(0,0,0,0.4)] inset-glow flex items-center justify-center">
-          <AppLogo 
-            showLabel={false} 
-            iconClassName="size-9"
-          />
-        </div>
-      </motion.div>
-      <motion.h1 variants={childVariants} className="text-[32px] md:text-4xl font-bold text-white tracking-tight leading-none max-w-md">
-        Hi, I&rsquo;m Soxial
-      </motion.h1>
-      <motion.p variants={childVariants} className="text-zinc-400 text-sm leading-relaxed mt-4 max-w-sm font-medium">
-        A personal social media manager that studies your voice, audience, and current standing, then builds a growth system you approve before anything goes public.
-      </motion.p>
-
-      <motion.div variants={childVariants} className="flex items-center gap-8 mt-10 text-xs text-zinc-500 font-bold">
-        <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-white/[0.02] border border-white/[0.04] shadow-sm hover:text-white transition-colors">
-          <XLogo className="size-3.5" />
-          <span>X / Twitter</span>
-        </div>
-        <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-white/[0.02] border border-white/[0.04] shadow-sm hover:text-white transition-colors">
-          <RedditLogo className="size-3.5" />
-          <span>Reddit</span>
-        </div>
-      </motion.div>
-
-      <motion.div variants={childVariants} className="mt-12 w-full flex justify-center">
-        <PrimaryButton onClick={onNext} className="bg-white text-zinc-950 py-3.5 px-8 shadow-lg">
-          Get Started
-        </PrimaryButton>
-      </motion.div>
-
-      <motion.p variants={childVariants} className="text-[10px] text-zinc-600 font-bold uppercase tracking-[0.16em] mt-8 leading-relaxed max-w-xs">
-        One-time setup · Takes about 5 minutes
-      </motion.p>
-    </div>
-  )
-}
-
-function StepIdentity({ formData, update, onNext }: any) {
-  return (
-    <div className="space-y-10">
-      <motion.div variants={childVariants}>
-        <h1 className="text-3xl font-bold text-white tracking-tight leading-none">Tell me about you</h1>
-        <p className="text-zinc-500 mt-2 text-sm font-semibold">Basic info to personalize your strategy.</p>
-      </motion.div>
-
-      {/* Sheet panel enclosing inputs */}
-      <motion.div variants={childVariants} className="p-1.5 rounded-3xl bg-white/[0.02] border border-white/[0.04] shadow-[0_12px_40px_rgba(0,0,0,0.5)]">
-        <div className="p-6 md:p-8 rounded-[calc(1.5rem+4px)] bg-[#0c0c10]/40 shadow-[inset_0_1px_0_rgba(255,255,255,0.03)] space-y-6">
-          <div className="grid grid-cols-2 gap-4">
-            <Input label="Name" value={formData.name} onChange={(v: string) => update('name', v)} placeholder="Jane Doe" />
-            <Input label="Timezone" value={formData.timezone} onChange={(v: string) => update('timezone', v)} placeholder="UTC+1" />
-          </div>
-          <Input label="What do you do?" value={formData.niche} onChange={(v: string) => update('niche', v)} placeholder="e.g., Frontend developer specializing in motion UI" />
-          <Input label="What makes you different?" value={formData.superpower} onChange={(v: string) => update('superpower', v)} placeholder="e.g., I combine design sense with deep technical knowledge" />
-
-          {/* Primary goal grid */}
-          <div className="space-y-3">
-            <label className="block text-[10px] uppercase tracking-[0.16em] text-zinc-500 font-bold ml-1">Primary goal</label>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-3 relative">
-              {GOALS.map(g => {
-                const Icon = GOAL_ICONS[g] || Target
-                const selected = formData.primary_goal === g
-                return (
-                  <motion.button
-                    key={g}
-                    onClick={() => update('primary_goal', g)}
-                    whileHover={{ scale: 1.01 }}
-                    whileTap={{ scale: 0.98 }}
-                    className={cn(
-                      "group relative flex items-center gap-3.5 p-3 rounded-xl border transition-colors text-left",
-                      selected 
-                        ? "text-white border-transparent" 
-                        : "bg-white/[0.01] hover:bg-white/[0.02] border-white/[0.04] hover:border-white/[0.08] text-zinc-400 hover:text-white"
-                    )}
-                  >
-                    {selected && (
-                      <motion.span 
-                        layoutId="selectedGoalBackdrop"
-                        className="absolute inset-0 rounded-xl bg-white/[0.04] border border-white/[0.03] shadow-sm z-0"
-                        transition={springTransition}
-                      />
-                    )}
-                    <div className={cn(
-                      "w-8.5 h-8.5 rounded-lg flex items-center justify-center shrink-0 transition-colors z-10",
-                      selected ? 'bg-blue-500/10 border border-blue-500/20 text-blue-400' : 'bg-white/[0.02] text-zinc-500 group-hover:text-zinc-300'
-                    )}>
-                      <Icon strokeWidth={2} className="size-4" />
-                    </div>
-                    <span className="text-[13px] font-semibold tracking-tight relative z-10">{g}</span>
-                  </motion.button>
-                )
-              })}
+    <div className="relative flex min-h-[100dvh] flex-1 items-center justify-center overflow-hidden px-6 py-12 sm:px-8">
+      <MountainVideo className="pointer-events-none absolute inset-0 z-0 opacity-90" />
+      <div className="pointer-events-none absolute inset-0 z-0 bg-[#050507]/15" />
+      <div className="pointer-events-none absolute inset-0 z-0 bg-[radial-gradient(circle_at_center,transparent_0%,rgba(5,5,7,0.12)_72%,rgba(5,5,7,0.35)_100%)]" />
+      <motion.div variants={childVariants} className="relative z-10 w-full max-w-[720px]">
+          <motion.div variants={childVariants} className="flex justify-center">
+            <div className="flex items-center justify-center gap-4">
+              <AppLogo
+                showLabel={false}
+                iconClassName="size-14 md:size-16 rounded-2xl object-contain drop-shadow-[0_10px_24px_rgba(59,130,246,0.2)]"
+              />
+              <span className="text-2xl font-semibold tracking-tight text-white md:text-3xl">Soxial</span>
             </div>
-          </div>
+          </motion.div>
 
-          <Textarea label="Describe your voice" value={formData.voice_description} onChange={(v: string) => update('voice_description', v)} placeholder="e.g., Casual but technical. I explain complex things simply." />
-        </div>
-      </motion.div>
-
-      <motion.div variants={childVariants} className="pt-2">
-        <PrimaryButton onClick={onNext} disabled={!formData.name || !formData.niche} className="w-full bg-white text-zinc-950 py-4 px-6 shadow-md justify-between">
-          Continue
-        </PrimaryButton>
-      </motion.div>
-    </div>
-  )
-}
-
-function StepPlatforms({ formData, update, onBack, onNext }: any) {
-  return (
-    <div className="space-y-10">
-      <motion.div variants={childVariants}>
-        <h1 className="text-3xl font-bold text-white tracking-tight leading-none">Connect your platforms</h1>
-        <p className="text-zinc-400 mt-2 text-sm font-medium leading-relaxed">
-          Soxial securely connects to your active social accounts using session cookies from your default browser — no paid API keys required.
-        </p>
-      </motion.div>
-
-      {/* Sheet panel enclosing platform discovery info */}
-      <motion.div variants={childVariants} className="p-1.5 rounded-3xl bg-white/[0.02] border border-white/[0.04] shadow-[0_12px_40px_rgba(0,0,0,0.5)]">
-        <div className="p-6 md:p-8 rounded-[calc(1.5rem+4px)] bg-[#0c0c10]/40 shadow-[inset_0_1px_0_rgba(255,255,255,0.03)] space-y-6">
-          
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {/* X Card */}
-            <div className="p-5 rounded-2xl bg-white/[0.02] border border-white/[0.04] space-y-2.5">
-              <div className="flex items-center gap-2.5">
-                <div className="w-8 h-8 rounded-xl bg-white/[0.04] border border-white/[0.06] flex items-center justify-center">
-                  <XLogo className="size-4 text-white" />
-                </div>
-                <div>
-                  <h3 className="text-sm font-bold text-white leading-tight">X / Twitter</h3>
-                  <span className="text-[11px] text-zinc-500 font-medium">Auto-detected from browser</span>
-                </div>
-              </div>
-              <p className="text-xs text-zinc-400 leading-relaxed font-normal">
-                Reads your timeline, searches trends, drafts tweets, and assists engagement.
-              </p>
-            </div>
-
-            {/* Reddit Card */}
-            <div className="p-5 rounded-2xl bg-white/[0.02] border border-white/[0.04] space-y-2.5">
-              <div className="flex items-center gap-2.5">
-                <div className="w-8 h-8 rounded-xl bg-[#ff4500]/10 border border-[#ff4500]/20 flex items-center justify-center">
-                  <RedditLogo className="size-4 text-[#ff4500]" />
-                </div>
-                <div>
-                  <h3 className="text-sm font-bold text-white leading-tight">Reddit</h3>
-                  <span className="text-[11px] text-zinc-500 font-medium">Auto-detected from browser</span>
-                </div>
-              </div>
-              <p className="text-xs text-zinc-400 leading-relaxed font-normal">
-                Discovers niche subreddits, monitors discussions, and crafts helpful comments.
-              </p>
-            </div>
-          </div>
-
-          <Input
-            label="Target audience"
-            value={formData.target_audience}
-            onChange={(v: string) => update('target_audience', v)}
-            placeholder="e.g., Startup founders, indie developers, AI engineers"
-            hint="Describe who you want to reach across your content strategy."
-          />
-
-          <div className="p-4 rounded-2xl bg-blue-500/5 border border-blue-500/10 flex items-start gap-3">
-            <Check className="size-4 text-blue-400 shrink-0 mt-0.5" />
-            <p className="text-xs text-zinc-300 leading-relaxed font-medium">
-              Make sure you are logged into your preferred accounts in your browser (Chrome, Brave, Edge, Firefox, Arc, etc.). If you only want to use X or Reddit, you can proceed with a single platform.
+          <motion.div variants={childVariants} className="mt-10 text-center">
+            <h1 className="text-[32px] font-semibold leading-[1.08] tracking-[-0.04em] text-white text-balance sm:text-4xl">
+              Set up your social workspace.
+            </h1>
+            <p className="mx-auto mt-4 max-w-none text-sm leading-6 text-white text-pretty mix-blend-difference sm:whitespace-nowrap">
+              Your personal social media manager for thoughtful posts, replies, and growth.
             </p>
-          </div>
-        </div>
+          </motion.div>
+
+          <motion.div variants={childVariants} className="mt-2 flex flex-col items-center gap-3 py-4">
+            <span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-zinc-600">Works with</span>
+            <div className="flex items-center justify-center gap-2">
+              <span className="inline-flex items-center gap-1.5 rounded-lg border border-white/[0.07] bg-white/[0.025] px-2.5 py-1.5 text-xs font-medium text-zinc-300">
+                <XLogo className="size-3.5 text-white" /> Twitter / X
+              </span>
+              <span className="inline-flex items-center gap-1.5 rounded-lg border border-white/[0.07] bg-white/[0.025] px-2.5 py-1.5 text-xs font-medium text-zinc-300">
+                <RedditLogo className="size-3.5 text-[#ff4500]" /> Reddit
+              </span>
+            </div>
+          </motion.div>
+
+          <motion.div variants={childVariants} className="mt-9 flex justify-center">
+            <GradientButton onClick={onNext}>Begin setup</GradientButton>
+          </motion.div>
+      </motion.div>
+    </div>
+  )
+}
+
+function StepIdentity({ initialStage = 'name', formData, update, onBack, onNext }: any) {
+  const [identityStage, setIdentityStage] = useState<IdentityStage>(initialStage)
+
+  const timezoneItems = useMemo<AutocompleteItemData[]>(() => {
+    const fallback = ['UTC', 'America/New_York', 'America/Los_Angeles', 'Europe/London', 'Europe/Berlin', 'Asia/Dhaka', 'Asia/Kolkata', 'Asia/Singapore', 'Asia/Tokyo', 'Australia/Sydney']
+    const timezones = typeof Intl.supportedValuesOf === 'function'
+      ? Intl.supportedValuesOf('timeZone')
+      : fallback
+    return timezones.map((timezone) => {
+      const city = timezone.split('/').pop()?.replace(/_/g, ' ') || timezone
+      return { value: timezone, label: city }
+    })
+  }, [])
+
+  const stageTitle = {
+    name: 'Tell me about you',
+    timezone: 'What time-zone are you in',
+    niche: 'What do you do',
+    superpower: 'What makes you different',
+    goal: "What's your primary goal?",
+  }[identityStage]
+
+  const stageValue = {
+    name: formData.name,
+    timezone: formData.timezone,
+    niche: formData.niche,
+    superpower: formData.superpower,
+    goal: formData.primary_goal,
+  }[identityStage]
+
+  const canAdvance = canAdvanceIdentityStage(identityStage, stageValue)
+  const advanceLabel = getIdentityStageActionLabel(identityStage, stageValue)
+
+  const advanceStage = () => {
+    if (!canAdvance) return
+    if (identityStage === 'name') setIdentityStage('timezone')
+    else if (identityStage === 'timezone') setIdentityStage('niche')
+    else if (identityStage === 'niche') setIdentityStage('superpower')
+    else if (identityStage === 'superpower') setIdentityStage('goal')
+    else onNext()
+  }
+
+  const goBack = () => {
+    if (identityStage === 'timezone') setIdentityStage('name')
+    else if (identityStage === 'niche') setIdentityStage('timezone')
+    else if (identityStage === 'superpower') setIdentityStage('niche')
+    else if (identityStage === 'goal') setIdentityStage('superpower')
+  }
+
+  const handleTextKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
+    if (event.key === 'Enter') {
+      event.preventDefault()
+      advanceStage()
+    }
+  }
+
+  return (
+    <div className="space-y-10">
+      <motion.div variants={childVariants} className="text-center">
+        <AnimatePresence mode="wait" initial={false}>
+          <motion.h1
+            key={identityStage}
+            initial={{ opacity: 0, y: 8 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -8 }}
+            transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }}
+            className="text-3xl font-bold leading-none tracking-tight text-white"
+          >
+            {stageTitle}
+          </motion.h1>
+        </AnimatePresence>
       </motion.div>
 
-      <motion.div variants={childVariants} className="flex items-center gap-3 pt-1">
-        <motion.button
-          onClick={onBack}
-          whileTap={{ scale: 0.98 }}
-          className="flex items-center gap-2 px-6 py-3.5 rounded-full text-sm font-bold text-zinc-500 hover:text-white transition-colors"
-        >
-          Back
-        </motion.button>
-        <PrimaryButton onClick={onNext} className="flex-1 bg-white text-zinc-950 py-4 px-6 shadow-md justify-between">
-          Start AI Onboarding
-        </PrimaryButton>
+      <div className="mx-auto w-full max-w-[480px]">
+        <AnimatePresence mode="wait" initial={false}>
+          {identityStage === 'name' && (
+            <motion.div key="name" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -12, scale: 0.985 }} transition={{ duration: 0.22, ease: [0.22, 1, 0.36, 1] }} className="space-y-4">
+              <Input label={undefined} name="name" autoComplete="name" ariaLabel="Your name" autoFocus value={formData.name} onChange={(v: string) => update('name', v)} onKeyDown={handleTextKeyDown} placeholder="Your name" />
+            </motion.div>
+          )}
+
+          {identityStage === 'timezone' && (
+            <motion.div key="timezone" initial={{ opacity: 0, y: 12, scale: 0.985 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, y: -8, scale: 0.985 }} transition={{ duration: 0.24, ease: [0.22, 1, 0.36, 1] }} className="space-y-4">
+              <Autocomplete items={timezoneItems} value={formData.timezone} onValueChange={(timezone) => update('timezone', timezone)} placeholder="type your city name" aria-label="type your city name" autoFocus={!formData.timezone} virtualize />
+            </motion.div>
+          )}
+
+          {identityStage === 'niche' && (
+            <motion.div key="niche" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -12, scale: 0.985 }} transition={{ duration: 0.22, ease: [0.22, 1, 0.36, 1] }} className="space-y-4">
+              <Input label={undefined} name="niche" ariaLabel="What do you do" autoFocus value={formData.niche} onChange={(v: string) => update('niche', v)} onKeyDown={handleTextKeyDown} placeholder="e.g. I build developer tools" />
+            </motion.div>
+          )}
+
+          {identityStage === 'superpower' && (
+            <motion.div key="superpower" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -12, scale: 0.985 }} transition={{ duration: 0.22, ease: [0.22, 1, 0.36, 1] }} className="space-y-4">
+              <Input label={undefined} name="superpower" ariaLabel="What makes you different" autoFocus value={formData.superpower} onChange={(v: string) => update('superpower', v)} onKeyDown={handleTextKeyDown} placeholder="e.g. I make complex ideas feel simple" />
+            </motion.div>
+          )}
+
+          {identityStage === 'goal' && (
+            <motion.div key="goal" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -12, scale: 0.985 }} transition={{ duration: 0.22, ease: [0.22, 1, 0.36, 1] }}>
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <button type="button" className="group relative flex h-11 w-full items-center rounded-xl border border-input/60 bg-card px-4 text-sm text-foreground shadow-sm outline-none transition-[background-color,border-color,box-shadow,border-radius] hover:border-input focus-visible:border-input data-[state=open]:rounded-[1.25rem]" aria-label="Choose your primary goal">
+                    <span className={cn('w-full text-center', !formData.primary_goal && 'text-muted-foreground')}>
+                      {formData.primary_goal || 'Choose your primary goal'}
+                    </span>
+                    <ChevronDown className="absolute right-4 size-4 text-muted-foreground transition-transform duration-200 group-data-[state=open]:rotate-180" />
+                  </button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="start" className="w-[min(480px,calc(100vw-3rem))]">
+                  <DropdownMenuLabel>Primary goal</DropdownMenuLabel>
+                  {GOALS.map((goal) => {
+                    const GoalIcon = GOAL_ICONS[goal]
+                    return (
+                      <DropdownMenuItem key={goal} delayDuration={0} onSelect={() => update('primary_goal', goal)}>
+                        <GoalIcon className="size-4 text-muted-foreground" />
+                        <span>{goal}</span>
+                        {formData.primary_goal === goal && <Check className="ml-auto size-4 text-primary" />}
+                      </DropdownMenuItem>
+                    )
+                  })}
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        <div className="mt-4 flex min-h-10 items-center justify-between">
+          <Button variant="ghost" size="default" shape="round" scaleOnPress depthShadow onClick={identityStage === 'name' ? onBack : goBack}>
+            <ArrowLeft className="size-4" />
+            <span>Back</span>
+          </Button>
+          <AnimatePresence initial={false}>
+            {canAdvance && (
+              <motion.div initial={{ opacity: 0, y: 10, scale: 0.97 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, y: -6, scale: 0.98 }} transition={{ type: 'spring', stiffness: 420, damping: 32 }}>
+                <Button variant={advanceLabel === 'Skip' ? 'ghost' : 'default'} size="default" shape="round" scaleOnPress depthShadow onClick={advanceStage}>
+                  <span>{advanceLabel}</span>
+                  <ArrowRight className="size-4" />
+                </Button>
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function StepAccountAnalysisInfo({ formData, update, onBack, onNext }: any) {
+  const audienceLabel = getOptionalStepActionLabel(formData.target_audience)
+
+  return (
+    <div className="space-y-10">
+      <motion.div variants={childVariants} className="text-center">
+        <h1 className="text-3xl font-bold leading-none tracking-tight text-white">Before we analyze your accounts</h1>
+      </motion.div>
+
+      <motion.div variants={childVariants} className="mx-auto w-full max-w-[480px] space-y-6">
+        <div className="flex flex-col items-center gap-3 text-center">
+          <p className="w-[640px] max-w-[calc(100vw-4rem)] text-sm leading-relaxed text-zinc-400 text-pretty">
+            Soxial uses the X and Reddit accounts currently signed in to your browser. You'll be asked to sign in if either account cannot be detected.
+          </p>
+          <div className="flex items-center gap-3 text-sm text-zinc-300">
+            <span className="inline-flex items-center gap-2">
+              <XLogo className="size-3.5 text-white" /> Twitter / X
+            </span>
+            <span className="text-zinc-700">•</span>
+            <span className="inline-flex items-center gap-2">
+              <RedditLogo className="size-3.5 text-[#ff4500]" /> Reddit
+            </span>
+          </div>
+        </div>
+
+        <Input
+          label={undefined}
+          name="target_audience"
+          ariaLabel="Who's your target audience"
+          autoFocus
+          value={formData.target_audience}
+          onChange={(value: string) => update('target_audience', value)}
+          placeholder="Who's your target audience (optional)"
+          hint="Not sure? Skip this and Soxial will infer it from your posts."
+        />
+
+        <div className="flex min-h-10 items-center justify-between pt-1">
+          <Button variant="ghost" size="default" shape="round" scaleOnPress depthShadow onClick={onBack} className="text-zinc-500 hover:text-white">
+            <ArrowLeft className="size-4" />
+            <span>Back</span>
+          </Button>
+          <Button variant={audienceLabel === 'Skip' ? 'ghost' : 'default'} size="default" shape="round" scaleOnPress depthShadow onClick={onNext}>
+            <span>{audienceLabel}</span>
+            <ArrowRight className="size-4" />
+          </Button>
+        </div>
+
+        <p className="border-t border-white/5 pt-4 text-center text-xs leading-relaxed text-zinc-500">
+          {ACCOUNT_ANALYSIS_DISCLOSURE}
+        </p>
       </motion.div>
     </div>
   )
@@ -411,6 +487,9 @@ function StepApiKey({ formData, update, onBack, onNext }: any) {
   const [zhipuExtras, setZhipuExtras] = useState<Array<{ id?: number; value: string; masked?: string }>>([])
   const [codingPlan, setCodingPlan] = useState(formData.zai_coding_plan === 1)
   const [saving, setSaving] = useState(false)
+  const [verifying, setVerifying] = useState(false)
+  const [verificationStage, setVerificationStage] = useState<string>('')
+  const [verificationError, setVerificationError] = useState<{ provider: 'google' | 'zhipu'; message: string } | null>(null)
 
   useEffect(() => {
     window.api.getApiKeys('google').then((keys: any[]) => {
@@ -422,6 +501,58 @@ function StepApiKey({ formData, update, onBack, onNext }: any) {
   }, [])
 
   const handleContinue = async () => {
+    if (saving || verifying) return
+
+    // Verify before persisting: a rejected key must never be written to the
+    // profile, and the run must not reach account gathering without a provider.
+    setVerificationError(null)
+    setVerifying(true)
+    setVerificationStage('Checking your AI provider credentials…')
+
+    try {
+      const request = {
+        google: {
+          primary: primaryGoogleKey.trim() || undefined,
+          additional: googleExtras.filter(e => !e.id && e.value.trim()).map(e => e.value.trim()),
+          storedKeyIds: googleExtras.filter(e => e.id).map(e => e.id as number),
+        },
+        zhipu: {
+          primary: primaryZhipuKey.trim() || undefined,
+          additional: zhipuExtras.filter(e => !e.id && e.value.trim()).map(e => e.value.trim()),
+          storedKeyIds: zhipuExtras.filter(e => e.id).map(e => e.id as number),
+          codingPlan,
+        },
+      }
+
+      const report = await window.api.verifyCredentials(request)
+
+      if (!report?.ok) {
+        const failure = report?.results?.find(result => !result.valid && result.slot !== 'stored')
+          ?? report?.results?.find(result => !result.valid)
+        setVerificationError({
+          provider: failure?.provider ?? 'google',
+          message: failure?.message ?? report?.message ?? 'Could not verify your API key.',
+        })
+        if (failure?.provider) setActiveTab(failure.provider)
+        return
+      }
+
+      setVerificationStage('Credentials verified. Saving…')
+      await persistKeys()
+      onNext()
+    } catch (err) {
+      console.error('Failed to verify API keys:', err)
+      setVerificationError({
+        provider: activeTab,
+        message: 'Could not verify your API key. Please try again.',
+      })
+    } finally {
+      setVerifying(false)
+      setVerificationStage('')
+    }
+  }
+
+  const persistKeys = async () => {
     setSaving(true)
     try {
       await window.api.updateProfile({
@@ -453,10 +584,6 @@ function StepApiKey({ formData, update, onBack, onNext }: any) {
       update('gemini_api_key', primaryGoogleKey.trim())
       update('zai_api_key', primaryZhipuKey.trim())
       update('zai_coding_plan', codingPlan ? 1 : 0)
-      onNext()
-    } catch (err) {
-      console.error('Failed to save API keys:', err)
-      alert('Failed to save API keys. Please try again.')
     } finally {
       setSaving(false)
     }
@@ -466,29 +593,25 @@ function StepApiKey({ formData, update, onBack, onNext }: any) {
 
   return (
     <div className="space-y-10">
-      <motion.div variants={childVariants}>
-        <h1 className="text-3xl font-bold text-white tracking-tight leading-none">Credentials</h1>
-        <p className="text-zinc-500 mt-2 text-sm font-semibold">
-          Configure Google AI Studio or Z.AI (Zhipu) API access credentials to authenticate agent actions.
-        </p>
+      <motion.div variants={childVariants} className="text-center">
+        <h1 className="text-3xl font-bold leading-none tracking-tight text-white">Add an AI provider</h1>
       </motion.div>
 
-      {/* Sheet panel enclosing inputs */}
-      <motion.div variants={childVariants} className="p-1.5 rounded-3xl bg-white/[0.02] border border-white/[0.04] shadow-[0_12px_40px_rgba(0,0,0,0.5)]">
-        <div className="p-6 md:p-8 rounded-[calc(1.5rem+4px)] bg-[#0c0c10]/40 shadow-[inset_0_1px_0_rgba(255,255,255,0.03)] space-y-6">
+      <motion.div variants={childVariants} className="mx-auto w-full max-w-[480px]">
+        <div className="space-y-6">
           {/* Sliding Tab Selector */}
-          <div className="p-0.5 rounded-xl bg-white/[0.02] border border-white/[0.04] flex max-w-[240px] relative">
+          <div className="mx-auto flex w-full max-w-[260px] rounded-xl border border-input/60 bg-card p-1 relative">
             <button
               onClick={() => setActiveTab('google')}
               className={cn(
-                "flex-1 py-1.5 text-[10px] uppercase tracking-wider font-bold rounded-lg transition-colors duration-300 relative z-10",
+                "relative z-10 flex-1 rounded-lg py-2 text-xs font-semibold tracking-wide transition-colors duration-300",
                 activeTab === 'google' ? "text-white" : "text-zinc-500 hover:text-zinc-300"
               )}
             >
               {activeTab === 'google' && (
                 <motion.span 
                   layoutId="activeTabBackdropOnboarding"
-                  className="absolute inset-0 rounded-lg bg-white/[0.04] border border-white/[0.03] shadow-sm"
+                  className="absolute inset-0 rounded-lg border border-white/[0.06] bg-white/[0.06] shadow-sm"
                   transition={springTransition}
                 />
               )}
@@ -497,14 +620,14 @@ function StepApiKey({ formData, update, onBack, onNext }: any) {
             <button
               onClick={() => setActiveTab('zhipu')}
               className={cn(
-                "flex-1 py-1.5 text-[10px] uppercase tracking-wider font-bold rounded-lg transition-colors duration-300 relative z-10",
+                "relative z-10 flex-1 rounded-lg py-2 text-xs font-semibold tracking-wide transition-colors duration-300",
                 activeTab === 'zhipu' ? "text-white" : "text-zinc-500 hover:text-zinc-300"
               )}
             >
               {activeTab === 'zhipu' && (
                 <motion.span 
                   layoutId="activeTabBackdropOnboarding"
-                  className="absolute inset-0 rounded-lg bg-white/[0.04] border border-white/[0.03] shadow-sm"
+                  className="absolute inset-0 rounded-lg border border-white/[0.06] bg-white/[0.06] shadow-sm"
                   transition={springTransition}
                 />
               )}
@@ -512,7 +635,7 @@ function StepApiKey({ formData, update, onBack, onNext }: any) {
             </button>
           </div>
 
-          <div className="min-h-[220px]">
+          <div>
             <AnimatePresence mode="wait">
               {activeTab === 'google' ? (
                 <motion.div 
@@ -524,33 +647,37 @@ function StepApiKey({ formData, update, onBack, onNext }: any) {
                   className="space-y-4"
                 >
                   <Input
-                    label="Primary Google API key"
+                    label={undefined}
                     value={primaryGoogleKey}
                     onChange={(v: string) => setPrimaryGoogleKey(v.trim())}
-                    placeholder="AIza..."
+                    placeholder="Paste your API key"
                     type="password"
-                    hint="Create one at aistudio.google.com"
                     icon={KeyRound}
                   />
                   {googleExtras.map((k, i) => (
                     <div key={k.id ?? `new-g-${i}`} className="flex gap-2 items-end">
                       <div className="flex-1">
                         <Input
-                          label="Backup API key"
+                          label={undefined}
                           value={k.value}
                           onChange={(v: string) => setGoogleExtras(prev => prev.map((item, idx) => idx === i ? { ...item, value: v } : item))}
-                          placeholder="AIza..."
+                          placeholder="Paste your backup API key"
                           type="password"
                           icon={KeyRound}
                         />
                       </div>
-                      <button
+                      <Button
+                        type="button"
+                        variant="destructive"
+                        size="icon"
+                        shape="square"
+                        scaleOnPress
+                        depthShadow
                         onClick={() => setGoogleExtras(prev => prev.filter((_, idx) => idx !== i))}
                         aria-label="Remove key"
-                        className="flex items-center justify-center w-12 h-[51px] rounded-xl bg-white/[0.01] hover:bg-white/[0.02] border border-white/[0.04] hover:border-red-500/20 hover:bg-red-500/10 text-zinc-600 hover:text-red-400 transition-colors shrink-0 shadow-sm"
                       >
                         <Trash2 className="size-4" />
-                      </button>
+                      </Button>
                     </div>
                   ))}
                   <button
@@ -570,20 +697,19 @@ function StepApiKey({ formData, update, onBack, onNext }: any) {
                   className="space-y-6"
                 >
                   <Input
-                    label="Primary Z.AI API key"
+                    label={undefined}
                     value={primaryZhipuKey}
                     onChange={(v: string) => setPrimaryZhipuKey(v.trim())}
-                    placeholder="Z.AI api key..."
+                    placeholder="Paste your API key"
                     type="password"
-                    hint="Create one on bigmodel.cn or docs.z.ai"
                     icon={KeyRound}
                   />
 
                   {/* Coding Plan Mode */}
                   <div className="flex items-center justify-between p-5 rounded-2xl bg-white/[0.01] hover:bg-white/[0.02] border border-white/[0.04] shadow-sm transition-colors">
                     <div>
-                      <div className="text-xs font-semibold text-white tracking-tight">Coding Plan Mode</div>
-                      <div className="text-[10px] text-zinc-500 font-medium mt-0.5">Toggle to use dedicated coding endpoint: https://api.z.ai/api/coding/paas/v4</div>
+                      <div className="text-xs font-semibold text-white tracking-tight">Coding plan API</div>
+                      <div className="text-[10px] text-zinc-500 font-medium mt-0.5">Enable if your api is a Coding plan api key</div>
                     </div>
                     {/* Apple style physical switch */}
                     <button
@@ -608,21 +734,26 @@ function StepApiKey({ formData, update, onBack, onNext }: any) {
                     <div key={k.id ?? `new-z-${i}`} className="flex gap-2 items-end">
                       <div className="flex-1">
                         <Input
-                          label="Backup API key"
+                          label={undefined}
                           value={k.value}
                           onChange={(v: string) => setZhipuExtras(prev => prev.map((item, idx) => idx === i ? { ...item, value: v } : item))}
-                          placeholder="Z.AI backup api key..."
+                          placeholder="Paste your backup API key"
                           type="password"
                           icon={KeyRound}
                         />
                       </div>
-                      <button
+                      <Button
+                        type="button"
+                        variant="destructive"
+                        size="icon"
+                        shape="square"
+                        scaleOnPress
+                        depthShadow
                         onClick={() => setZhipuExtras(prev => prev.filter((_, idx) => idx !== i))}
                         aria-label="Remove key"
-                        className="flex items-center justify-center w-12 h-[51px] rounded-xl bg-white/[0.01] hover:bg-white/[0.02] border border-white/[0.04] hover:border-red-500/20 hover:bg-red-500/10 text-zinc-600 hover:text-red-400 transition-colors shrink-0 shadow-sm"
                       >
                         <Trash2 className="size-4" />
-                      </button>
+                      </Button>
                     </div>
                   ))}
                   <button
@@ -638,18 +769,67 @@ function StepApiKey({ formData, update, onBack, onNext }: any) {
         </div>
       </motion.div>
 
-      <motion.div variants={childVariants} className="flex items-center gap-3 pt-1">
-        <motion.button
-          onClick={onBack}
-          whileTap={{ scale: 0.98 }}
-          className="flex items-center gap-2 px-6 py-3.5 rounded-full text-sm font-bold text-zinc-500 hover:text-white transition-colors"
-        >
+      <AnimatePresence initial={false}>
+        {verificationError && !verifying && (
+          <motion.div
+            initial={{ opacity: 0, y: -4 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -4 }}
+            transition={{ duration: 0.18 }}
+            role="alert"
+            className="mx-auto w-full max-w-[480px] rounded-xl border border-red-500/20 bg-red-500/[0.06] px-4 py-3"
+          >
+            <p className="text-xs font-semibold text-red-300">
+              {verificationError.provider === 'google' ? 'Google' : 'Z.AI'} verification failed
+            </p>
+            <p className="mt-1 text-xs leading-relaxed text-red-200/80">{verificationError.message}</p>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      <motion.div variants={childVariants} className="mx-auto flex w-full max-w-[480px] items-center justify-between gap-3 pt-1">
+        <Button variant="ghost" size="default" shape="round" scaleOnPress depthShadow onClick={onBack} disabled={verifying || saving} className="text-zinc-500 hover:text-white">
+          <ArrowLeft className="size-4" />
           Back
-        </motion.button>
-        <PrimaryButton onClick={handleContinue} disabled={!hasAnyKey || saving} className="flex-1 bg-white text-zinc-950 py-4 px-6 shadow-md justify-between">
-          {saving ? 'Saving...' : 'Continue'}
-        </PrimaryButton>
+        </Button>
+        <Button variant="default" size="default" shape="round" scaleOnPress depthShadow onClick={handleContinue} disabled={!hasAnyKey || saving || verifying}>
+          {verifying ? 'Verifying...' : saving ? 'Saving...' : 'Continue'}
+          <ArrowRight className="size-4" />
+        </Button>
       </motion.div>
+
+      {/* Verification status: blocks interaction while the check runs, and
+          closes on both success and failure. */}
+      <AnimatePresence>
+        {verifying && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.15 }}
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-[2px]"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Verifying API credentials"
+          >
+            <motion.div
+              initial={{ opacity: 0, y: 8, scale: 0.98 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: 4, scale: 0.99 }}
+              transition={{ duration: 0.18, ease: [0.22, 1, 0.36, 1] }}
+              className="w-[min(380px,calc(100vw-3rem))] rounded-2xl border border-white/[0.06] bg-[#0c0c0f] p-6 shadow-xl"
+            >
+              <div className="flex items-center gap-3">
+                <span className="size-2 animate-pulse rounded-full bg-blue-500" aria-hidden="true" />
+                <p className="text-sm font-semibold tracking-tight text-white">Verifying your API key</p>
+              </div>
+              <p aria-live="polite" className="mt-2 text-xs leading-relaxed text-zinc-400">
+                {verificationStage || 'Contacting your AI provider…'}
+              </p>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   )
 }
@@ -732,7 +912,10 @@ function StepAiOnboarding({ formData, onComplete, onBack }: { formData: any; onC
     canProceedPartial?: boolean
   } | null>(null)
   const [transientRetry, setTransientRetry] = useState<{ attempt: number; maxAttempts: number; backoffMs: number; model: string } | null>(null)
+  const [review, setReview] = useState<{ runId: string; version?: number } | null>(null)
   const mountedRef = useRef(true)
+  const runIdRef = useRef<string | null>(null)
+  const gateRef = useRef<OnboardingEventGate | null>(null)
 
   const stepsRef = useRef<StepItem[]>([])
   const stepCounter = useRef(0)
@@ -783,8 +966,11 @@ function StepAiOnboarding({ formData, onComplete, onBack }: { formData: any; onC
     }).join('\n\n')
     const nextMessages = [...messagesRef.current, { role: 'user' as const, content: display }]
     setMessages(nextMessages)
-    if (runId) {
-      window.api.checkpointOnboarding(runId, 'interview', nextMessages, {
+    // runIdRef is set before the run starts, so the first interview answer of a
+    // fresh run is checkpointed too.
+    const activeRunId = runIdRef.current
+    if (activeRunId) {
+      window.api.checkpointOnboarding(activeRunId, 'interview', nextMessages, {
         batchId: pendingBatchId || 'batch',
         questionIds: answers.map(answer => answer.id),
       }).catch(() => {})
@@ -794,7 +980,7 @@ function StepAiOnboarding({ formData, onComplete, onBack }: { formData: any; onC
     setPendingBatchId(null)
   }
 
-  const startOnboarding = (resume?: { runId: string; messages: any[] }) => {
+  const startOnboarding = async (resume?: { runId: string; messages: any[] }) => {
     setMessages(resume?.messages || [])
     stepsRef.current = []
     stepCounter.current = 0
@@ -809,17 +995,74 @@ function StepAiOnboarding({ formData, onComplete, onBack }: { formData: any; onC
     setSavedConversationState(resume?.messages || null)
     setTransientRetry(null)
 
-    window.api.runOnboarding(formData, resume?.messages, resume?.runId)
+    // Establish run identity before any long-running work so events can be
+    // scoped and answers checkpointed from the first question onward.
+    let activeRunId = resume?.runId
+    if (!activeRunId) {
+      try {
+        const prepared = await window.api.prepareOnboarding()
+        activeRunId = prepared?.runId
+      } catch {
+        // Fall through: the main process still assigns an id when executing.
+      }
+    }
+    if (!mountedRef.current) return
+    if (activeRunId) {
+      runIdRef.current = activeRunId
+      gateRef.current = createOnboardingEventGate(activeRunId)
+      setRunId(activeRunId)
+    }
+
+    // Resume re-enters the persisted checkpoint in the main process (Plan 7);
+    // the agent continues from persisted model messages, not this transcript.
+    const runPromise = resume
+      ? window.api.resumeOnboarding(resume.runId)
+      : window.api.runOnboarding(formData, undefined, activeRunId)
+    runPromise
       .then(result => {
         if (!mountedRef.current) return
         setStreaming(false)
-        if (result?.runId) setRunId(result.runId)
-         if (result?.success) {
+        if (result?.runId) {
+          runIdRef.current = result.runId
+          setRunId(result.runId)
+        }
+         if (result?.reviewRequired) {
+          commitStreamingMessage()
+          setStreaming(false)
+          const rid = result?.runId || activeRunId
+          if (rid) {
+            setRunId(rid)
+            runIdRef.current = rid
+            window.api.getStrategyDraft(rid).then(draft => {
+              if (draft?.success && mountedRef.current) {
+                setReview({ runId: rid, version: draft.version })
+              }
+            }).catch(() => {})
+          }
+        } else if (result?.success) {
           commitStreamingMessage()
           setComplete(true)
         } else if (result?.aborted) {
           // user backed out of the auth gate; parent already navigated away
         } else {
+          // Preserve transcript even on failure — commit any in-flight streaming
+          // content so thinking/toolcalls/response after the last user message
+          // remain visible and retryable, and checkpoint it for reload.
+          const pendingText = streamTextRef.current.trim()
+          const pendingSteps = [...stepsRef.current]
+          const hasPendingStream = pendingText.length > 0 || pendingSteps.length > 0
+          let transcript: any[] | null = null
+          if (hasPendingStream) {
+            transcript = [...messagesRef.current, { role: 'assistant' as const, content: pendingText, steps: pendingSteps.length ? pendingSteps : undefined }]
+            commitStreamingMessage()
+          } else {
+            transcript = [...messagesRef.current]
+          }
+          if (transcript.length > 0) {
+            setSavedConversationState(transcript.map(m => ({ role: m.role, content: m.content, steps: (m as any).steps })))
+            const rid = result?.runId || activeRunId || runIdRef.current
+            if (rid) window.api.checkpointOnboarding(rid, 'interview', transcript).catch(() => {})
+          }
           setAppError(result?.appError || null)
           setError(result?.error || 'Failed to complete onboarding')
         }
@@ -827,14 +1070,26 @@ function StepAiOnboarding({ formData, onComplete, onBack }: { formData: any; onC
       .catch(err => {
         if (!mountedRef.current) return
         setStreaming(false)
+        const pendingText = streamTextRef.current.trim()
+        const pendingSteps = [...stepsRef.current]
+        const hasPendingStream = pendingText.length > 0 || pendingSteps.length > 0
+        let transcript: any[] | null = null
+        if (hasPendingStream) {
+          transcript = [...messagesRef.current, { role: 'assistant' as const, content: pendingText, steps: pendingSteps.length ? pendingSteps : undefined }]
+          commitStreamingMessage()
+        } else {
+          transcript = [...messagesRef.current]
+        }
         setError(err.message || 'An error occurred during onboarding')
         setAppError(null)
-        // Save conversation state for retry (use the ref so we get the latest, not the stale closure)
-        setSavedConversationState(messagesRef.current.map(m => ({
-          role: m.role,
-          content: m.content,
-          steps: m.steps
-        })))
+        if (transcript && transcript.length > 0) {
+          setSavedConversationState(transcript.map((m: any) => ({ role: m.role, content: m.content, steps: m.steps })))
+          const rid = activeRunId || runIdRef.current
+          if (rid) window.api.checkpointOnboarding(rid, 'interview', transcript).catch(() => {})
+        } else {
+          const snapshot: any[] = (savedConversationState as any) || []
+          setSavedConversationState(snapshot.map((m: any) => ({ role: m.role, content: m.content, steps: m.steps })))
+        }
       })
   }
 
@@ -852,17 +1107,37 @@ function StepAiOnboarding({ formData, onComplete, onBack }: { formData: any; onC
     }))
     
     // Continue with current context - pass existing messages
-    window.api.runOnboarding(formData, messagesToContinue, runId || undefined)
+    const activeRunId = runIdRef.current || runId || undefined
+    if (activeRunId) gateRef.current = createOnboardingEventGate(activeRunId)
+    window.api.runOnboarding(formData, messagesToContinue, activeRunId)
       .then(result => {
         if (!mountedRef.current) return
         setStreaming(false)
-        if (result?.runId) setRunId(result.runId)
+        if (result?.runId) {
+          runIdRef.current = result.runId
+          setRunId(result.runId)
+        }
         if (result?.success) {
           commitStreamingMessage()
           setComplete(true)
         } else if (result?.aborted) {
           // no-op
         } else {
+          const pendingText = streamTextRef.current.trim()
+          const pendingSteps = [...stepsRef.current]
+          const hasPendingStream = pendingText.length > 0 || pendingSteps.length > 0
+          let transcript: any[] | null = null
+          if (hasPendingStream) {
+            transcript = [...messagesRef.current, { role: 'assistant' as const, content: pendingText, steps: pendingSteps.length ? pendingSteps : undefined }]
+            commitStreamingMessage()
+          } else {
+            transcript = [...messagesRef.current]
+          }
+          if (transcript.length > 0) {
+            setSavedConversationState(transcript.map((m: any) => ({ role: m.role, content: m.content, steps: m.steps })))
+            const rid = (result as any)?.runId || activeRunId || runIdRef.current
+            if (rid) window.api.checkpointOnboarding(rid, 'interview', transcript).catch(() => {})
+          }
           setAppError(result?.appError || null)
           setError(result?.error || 'Failed to complete onboarding')
         }
@@ -870,14 +1145,30 @@ function StepAiOnboarding({ formData, onComplete, onBack }: { formData: any; onC
       .catch(err => {
         if (!mountedRef.current) return
         setStreaming(false)
+        const pendingText = streamTextRef.current.trim()
+        const pendingSteps = [...stepsRef.current]
+        const hasPendingStream = pendingText.length > 0 || pendingSteps.length > 0
+        let transcript: any[] | null = null
+        if (hasPendingStream) {
+          transcript = [...messagesRef.current, { role: 'assistant' as const, content: pendingText, steps: pendingSteps.length ? pendingSteps : undefined }]
+          commitStreamingMessage()
+        } else {
+          transcript = [...messagesRef.current]
+        }
         setError(err.message || 'An error occurred during onboarding')
         setAppError(null)
         // Save conversation state for retry (use the ref so we get the latest, not the stale closure)
-        setSavedConversationState(messagesRef.current.map(m => ({
-          role: m.role,
-          content: m.content,
-          steps: m.steps
-        })))
+        if (transcript && transcript.length > 0) {
+          setSavedConversationState(transcript.map((m: any) => ({ role: m.role, content: m.content, steps: m.steps })))
+          const rid = activeRunId || runIdRef.current
+          if (rid) window.api.checkpointOnboarding(rid, 'interview', transcript).catch(() => {})
+        } else {
+          setSavedConversationState(messagesRef.current.map((m: any) => ({
+            role: m.role,
+            content: m.content,
+            steps: m.steps
+          })))
+        }
       })
   }
 
@@ -894,57 +1185,92 @@ function StepAiOnboarding({ formData, onComplete, onBack }: { formData: any; onC
     // Show initial loading state immediately
     setSteps([{ type: 'reasoning', text: 'Initializing onboarding...' }])
 
+    // Single run-scoped stream. The gate drops events from superseded runs and
+    // any out-of-order or duplicated delivery.
     const cleanup = [
-      window.api.onOnboardingChunk((text) => {
-    if (text === 'PHASE:gather' || text === 'PHASE:interview') return
-    setTransientRetry(null)   // stream resumed → clear high-demand banner
-    streamTextRef.current += text
-    setStreamText(streamTextRef.current)
-      }),
+      window.api.onOnboardingEvent((raw) => {
+        const gate = gateRef.current
+        if (!gate || !gate.accept(raw)) return
+        const { payload } = raw as OnboardingEvent
 
-      window.api.onOnboardingReasoning((text) => {
-      const s = stepsRef.current
-      const last = s[s.length - 1]
-      if (last && last.type === 'reasoning') {
-        last.text += text
-      } else {
-        s.push({ type: 'reasoning', text })
-      }
-      setSteps([...s])
-      }),
+        switch (payload.type) {
+          case 'phase':
+            if ((payload as any).phase === 'review') {
+              const rid = runIdRef.current
+              if (rid) {
+                window.api.getStrategyDraft(rid).then(draft => {
+                  if (draft?.success && mountedRef.current) setReview({ runId: rid, version: draft.version })
+                }).catch(() => {})
+              }
+            }
+            return
 
-      window.api.onOnboardingToolCall((data) => {
-      if (data.name === 'ask_user_questions') return
-      const tool: StepItem = { type: 'tool', id: stepCounter.current++, name: data.name, args: data.args, status: 'calling' }
-      stepsRef.current = [...stepsRef.current, tool]
-      setSteps(stepsRef.current)
-      }),
+          case 'text': {
+            setTransientRetry(null)   // stream resumed → clear high-demand banner
+            streamTextRef.current += payload.text
+            setStreamText(streamTextRef.current)
+            return
+          }
 
-      window.api.onOnboardingToolResult((data) => {
-      if (data.name === 'ask_user_questions') return
-      let found = false
-      stepsRef.current = stepsRef.current.map(s => {
-        if (!found && s.type === 'tool' && s.name === data.name && s.status === 'calling') {
-          found = true
-          return { ...s, status: 'complete', result: data.result }
+          case 'reasoning': {
+            const s = stepsRef.current
+            const last = s[s.length - 1]
+            if (last && last.type === 'reasoning') {
+              last.text += payload.text
+            } else {
+              s.push({ type: 'reasoning', text: payload.text })
+            }
+            setSteps([...s])
+            return
+          }
+
+          case 'tool-call': {
+            if (payload.name === 'ask_user_questions') return
+            const tool: StepItem = { type: 'tool', id: stepCounter.current++, name: payload.name, args: payload.args, status: 'calling' }
+            stepsRef.current = [...stepsRef.current, tool]
+            setSteps(stepsRef.current)
+            return
+          }
+
+          case 'tool-result': {
+            if (payload.name === 'ask_user_questions') return
+            let found = false
+            stepsRef.current = stepsRef.current.map(s => {
+              if (!found && s.type === 'tool' && s.name === payload.name && s.status === 'calling') {
+                found = true
+                return { ...s, status: 'complete', result: payload.result }
+              }
+              return s
+            })
+            setSteps([...stepsRef.current])
+            return
+          }
+
+          case 'question': {
+            commitStreamingMessage()
+            setPendingBatchId(payload.batchId)
+            setPendingQuestions(payload.questions as QuestionData[])
+            return
+          }
+
+          case 'auth-required': {
+            setPendingAuth(payload.auth as any)
+            return
+          }
+
+          case 'transient-retry': {
+            setTransientRetry({
+              attempt: payload.attempt,
+              maxAttempts: payload.maxAttempts,
+              backoffMs: payload.backoffMs,
+              model: payload.model,
+            })
+            return
+          }
+
+          default:
+            return
         }
-        return s
-      })
-      setSteps([...stepsRef.current])
-      }),
-
-      window.api.onOnboardingQuestion((payload: { batchId: string; questions: QuestionData[] }) => {
-      commitStreamingMessage()
-      setPendingBatchId(payload.batchId)
-      setPendingQuestions(payload.questions)
-      }),
-
-      window.api.onOnboardingAuthRequired((payload) => {
-      setPendingAuth(payload)
-      }),
-
-      window.api.onOnboardingTransientRetry((info) => {
-      setTransientRetry(info)
       }),
     ]
 
@@ -956,8 +1282,28 @@ function StepAiOnboarding({ formData, onComplete, onBack }: { formData: any; onC
           return
         }
         const checkpoint = parseResumeCheckpoint(resume.checkpointJson)
-        if (checkpoint && checkpoint.messages.length > 0) {
+        if (checkpoint && checkpoint.pendingReview) {
+          // A draft was awaiting user review: resume straight into it without
+          // re-running any model work.
+          runIdRef.current = checkpoint.runId
           setRunId(checkpoint.runId)
+          gateRef.current = createOnboardingEventGate(checkpoint.runId)
+          setMessages(checkpoint.messages as any)
+          setStreaming(false)
+          setReview({
+            runId: checkpoint.pendingReview.draftRunId,
+            version: checkpoint.pendingReview.expectedVersion,
+          })
+          return
+        }
+        if (checkpoint && checkpoint.messages.length > 0) {
+          runIdRef.current = checkpoint.runId
+          setRunId(checkpoint.runId)
+          // Reopen an unanswered questionnaire exactly as it was left.
+          if (checkpoint.pendingQuestions?.length) {
+            setPendingBatchId(checkpoint.pendingBatchId ?? null)
+            setPendingQuestions(checkpoint.pendingQuestions as QuestionData[])
+          }
           startOnboarding(checkpoint)
         } else {
           startOnboarding()
@@ -1145,39 +1491,54 @@ function StepAiOnboarding({ formData, onComplete, onBack }: { formData: any; onC
                     </div>
 
                     <div className="mt-5 flex flex-wrap items-center justify-between gap-3 pt-1 border-t border-white/[0.04]">
-                      <button
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        shape="round"
+                        scaleOnPress
+                        depthShadow
                         onClick={() => { window.api.retryOnboardingAuth(pendingAuth.id, 'abort'); setPendingAuth(null); onBack() }}
-                        className="px-4 py-2 rounded-full text-xs font-bold text-zinc-500 hover:text-white transition-colors"
+                        className="text-zinc-500 hover:text-white"
                       >
                         Back
-                      </button>
+                      </Button>
 
                       <div className="flex flex-wrap items-center gap-2.5">
                         {pendingAuth.canSkipReddit && (
-                          <button
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            shape="round"
+                            scaleOnPress
+                            depthShadow
                             onClick={() => { window.api.retryOnboardingAuth(pendingAuth.id, 'skip_reddit'); setPendingAuth(null) }}
-                            className="px-4 py-2 rounded-full text-xs font-bold text-zinc-300 bg-white/[0.04] border border-white/[0.08] hover:bg-white/[0.08] hover:text-white transition-colors"
                           >
                             Continue with X only
-                          </button>
+                          </Button>
                         )}
                         {pendingAuth.canSkipTwitter && (
-                          <button
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            shape="round"
+                            scaleOnPress
+                            depthShadow
                             onClick={() => { window.api.retryOnboardingAuth(pendingAuth.id, 'skip_twitter'); setPendingAuth(null) }}
-                            className="px-4 py-2 rounded-full text-xs font-bold text-zinc-300 bg-white/[0.04] border border-white/[0.08] hover:bg-white/[0.08] hover:text-white transition-colors"
                           >
                             Continue with Reddit only
-                          </button>
+                          </Button>
                         )}
-                        <button
+                        <Button
+                          variant="default"
+                          size="sm"
+                          shape="round"
+                          scaleOnPress
+                          depthShadow
                           onClick={() => { window.api.retryOnboardingAuth(pendingAuth.id, 'retry'); setPendingAuth(null) }}
-                          className="group flex items-center gap-2 px-5 py-2 rounded-full bg-white text-zinc-950 text-xs font-bold transition-transform active:scale-[0.96] hover:bg-zinc-100 shadow-lg"
                         >
                           Logged in
-                          <span className="w-5 h-5 rounded-full bg-zinc-900/15 flex items-center justify-center">
-                            <ArrowRight className="size-3 stroke-[2.5]" />
-                          </span>
-                        </button>
+                          <ArrowRight className="size-3 stroke-[2.5]" />
+                        </Button>
                       </div>
                     </div>
                   </>
@@ -1193,21 +1554,30 @@ function StepAiOnboarding({ formData, onComplete, onBack }: { formData: any; onC
                   <ShieldAlert className="size-4 shrink-0 stroke-[2]" />
                   <span className="truncate">{error}</span>
                 </div>
-                <button onClick={retryOnboarding} className="group flex items-center gap-2 px-4 py-2 rounded-full bg-white text-zinc-950 text-xs font-bold hover:bg-zinc-100 transition-transform active:scale-[0.96] shrink-0 shadow-lg">
+                <Button variant="default" size="sm" shape="round" scaleOnPress depthShadow onClick={retryOnboarding} className="shrink-0">
                   <RefreshCw className="size-3 stroke-[2.5]" /> Retry
-                </button>
+                </Button>
               </div>
             )
           ) : complete ? (
             hasNextAction ? (
               <div className="flex items-center gap-3 pointer-events-auto animate-in fade-in zoom-in-95 duration-500">
-                <button
+                <Button
+                  variant="ghost"
+                  size="lg"
+                  shape="round"
+                  scaleOnPress
+                  depthShadow
                   onClick={() => onComplete()}
-                  className="flex items-center gap-2 px-5 py-3 rounded-full text-xs font-bold text-zinc-500 hover:text-white transition-colors"
                 >
                   Skip to Dashboard
-                </button>
-                <button
+                </Button>
+                <Button
+                  variant="default"
+                  size="lg"
+                  shape="round"
+                  scaleOnPress
+                  depthShadow
                   onClick={async () => {
                     try {
                       const stripped = messages
@@ -1219,28 +1589,55 @@ function StepAiOnboarding({ formData, onComplete, onBack }: { formData: any; onC
                       onComplete()
                     }
                   }}
-                  className="group flex items-center gap-3 px-5 py-3 rounded-full bg-white text-zinc-950 text-xs font-bold transition-transform active:scale-[0.96] hover:bg-zinc-100 shadow-lg"
                 >
                   <span>Review Next Action</span>
-                  <span className="w-5 h-5 rounded-full bg-zinc-900/15 flex items-center justify-center transition-transform group-hover:translate-x-0.5">
-                    <ArrowRight className="size-3 stroke-[2.5]" />
-                  </span>
-                </button>
+                  <ArrowRight className="size-3 stroke-[2.5]" />
+                </Button>
               </div>
             ) : (
-              <button
+              <Button
+                variant="default"
+                size="lg"
+                shape="round"
+                scaleOnPress
+                depthShadow
                 onClick={() => onComplete()}
-                className="group flex items-center gap-3 px-5 py-3 rounded-full bg-white text-zinc-950 text-xs font-bold pointer-events-auto animate-in fade-in zoom-in-95 duration-500 transition-transform active:scale-[0.96] hover:bg-zinc-100 shadow-lg"
+                className="pointer-events-auto animate-in fade-in zoom-in-95 duration-500"
               >
                 <span>Continue to Dashboard</span>
-                <span className="w-5 h-5 rounded-full bg-zinc-900/15 flex items-center justify-center transition-transform group-hover:translate-x-0.5">
-                  <ArrowRight className="size-3 stroke-[2.5]" />
-                </span>
-              </button>
+                <ArrowRight className="size-3 stroke-[2.5]" />
+              </Button>
             )
           ) : pendingQuestions ? (
             <QuestionInput questions={pendingQuestions} onSubmit={handleAllAnswers} />
           ) : null}
+
+          {review && (
+            <div className="pointer-events-auto w-full max-w-3xl mx-auto">
+              <StrategyReview
+                runId={review.runId}
+                initialVersion={review.version}
+                onCommitted={async () => {
+                  setReview(null)
+                  setComplete(true)
+                  try {
+                    const stripped = messages
+                      .filter(m => m.content.trim())
+                      .map(m => ({ role: m.role, content: m.content }))
+                    const sessionId = await window.api.saveOnboardingConversation(stripped)
+                    onComplete(sessionId)
+                  } catch {
+                    onComplete()
+                  }
+                }}
+                onError={(message) => {
+                  if (message === 'saved-later') return // draft stays in review; resumable
+                  setError(message)
+                  setStreaming(false)
+                }}
+              />
+            </div>
+          )}
         </div>
       </div>
     </>

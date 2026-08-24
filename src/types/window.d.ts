@@ -17,27 +17,27 @@ interface Window {
     checkCliAuth: (name: 'twitter' | 'rdt') => Promise<any>
     twitterTweet: (tweetId: string, max?: number) => Promise<any>
     redditRead: (postId: string, maxComments?: number) => Promise<any>
+    prepareOnboarding: () => Promise<{ runId: string }>
     runOnboarding: (profileData: Record<string, any>, continueFromMessages?: any[], runId?: string) => Promise<any>
+    resumeOnboarding: (runId: string) => Promise<any>
+    onOnboardingEvent: (cb: (event: unknown) => void) => () => void
     getOnboardingResume: () => Promise<{ runId: string; phase: string; status: string; checkpointJson: string } | null>
     checkpointOnboarding: (runId: string, phase: 'gather' | 'interview', messages: any[], pendingQuestion?: { batchId: string; questionIds: string[] }) => Promise<{ success: boolean }>
+    cancelOnboarding: (runId: string) => Promise<{ success: boolean; error?: string }>
+    pauseOnboarding: (runId: string) => Promise<{ success: boolean; error?: string }>
     resetOnboarding: () => Promise<any>
-    onOnboardingChunk: (cb: (text: string) => void) => () => void
-    onOnboardingToolCall: (cb: (data: { name: string, args: any }) => void) => () => void
-    onOnboardingToolResult: (cb: (data: { name: string, result: any }) => void) => () => void
-    onOnboardingReasoning: (cb: (text: string) => void) => () => void
-    onOnboardingTransientRetry: (cb: (info: { attempt: number; maxAttempts: number; backoffMs: number; model: string }) => void) => () => void
-    onOnboardingQuestion: (cb: (payload: { batchId: string; questions: { id: string; text: string; type: 'single' | 'multi' | 'text'; options?: string[] }[] }) => void) => () => void
+    getStrategyDraft: (runId: string) => Promise<{ success: boolean; runId?: string; version?: number; status?: string; draft?: any; error?: string }>
+    updateDraftSection: (runId: string, expectedVersion: number, section: string, payload: any) => Promise<{ success: boolean; version?: number; error?: string; code?: string }>
+    regenerateDraftSection: (runId: string, expectedVersion: number, section: string) => Promise<{ success: boolean; version?: number; error?: string; code?: string }>
+    commitStrategy: (runId: string, expectedVersion: number) => Promise<{ success: boolean; alreadyCommitted?: boolean; error?: string; code?: string; missing?: string[] }>
+    discardStrategyDraft: (runId: string) => Promise<{ success: boolean; error?: string }>
+    getEnrichmentStatus: (runId: string) => Promise<{ success: boolean; runId?: string; job?: any; readiness?: string }>
+    retryEnrichment: (runId: string) => Promise<{ success: boolean; error?: string }>
+    onEnrichmentEvent: (cb: (event: unknown) => void) => () => void
+    cancelEnrichment: (runId: string) => Promise<{ success: boolean }>
     sendOnboardingAnswer: (id: string, answers: { id: string; answer: string | string[] }[]) => void
     saveOnboardingConversation: (messages: { role: string; content: string; steps?: any[] }[]) => Promise<number>
     retryOnboardingAuth: (id: string, action: 'retry' | 'skip_twitter' | 'skip_reddit' | 'abort' | boolean) => void
-    onOnboardingAuthRequired: (cb: (payload: {
-      id: string
-      twitter: { needed: boolean; ok: boolean; username?: string; name?: string }
-      reddit: { needed: boolean; ok: boolean; username?: string; name?: string }
-      canSkipTwitter?: boolean
-      canSkipReddit?: boolean
-      canProceedPartial?: boolean
-    }) => void) => () => void
     chatSend: (messages: any[], options?: { model?: string; effort?: string }, sessionId?: number) => Promise<any>
     chatInject: (payload: any, sessionId?: number) => Promise<any>
     chatStop: (sessionId?: number) => Promise<any>
@@ -73,6 +73,24 @@ interface Window {
     addApiKey: (apiKey: string, provider?: string) => Promise<number>
     removeApiKey: (id: number) => Promise<void>
     getModelExhaustionStatus: (model: string) => Promise<{ exhausted: boolean; availableAt: string | null }>
+    verifyCredentials: (request: {
+      google?: { primary?: string; additional?: string[]; storedKeyIds?: number[] }
+      zhipu?: { primary?: string; additional?: string[]; storedKeyIds?: number[]; codingPlan?: boolean }
+    }) => Promise<{
+      ok: boolean
+      tier: 'free' | 'pro' | 'unknown'
+      message: string
+      results: Array<{
+        provider: 'google' | 'zhipu'
+        slot: 'primary' | 'additional' | 'stored'
+        index?: number
+        id?: number
+        valid: boolean
+        code: 'VALID' | 'INVALID_CREDENTIALS' | 'RATE_LIMITED' | 'NETWORK_ERROR' | 'MODEL_UNAVAILABLE' | 'UNKNOWN_ERROR'
+        message: string
+        masked: string | null
+      }>
+    }>
     detectApiTier: (force?: boolean) => Promise<'free' | 'pro'>
     removeAllListeners: (channel: string) => void
   }

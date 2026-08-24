@@ -12,6 +12,10 @@
         --popover-foreground: 0 0% 98%;
         --primary: 0 0% 98%;
         --primary-foreground: 0 0% 9%;
+        /* Default button (primary-style CTA) fill — dimmed below pure white so
+           the depth layer shadows stay visible against the button's own edge. */
+        --btn-primary-bg: 0 0% 85%;
+        --btn-primary-foreground: 0 0% 9%;
         --secondary: 0 0% 10%;
         --secondary-foreground: 0 0% 98%;
         --muted: 0 0% 10%;

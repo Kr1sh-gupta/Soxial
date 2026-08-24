@@ -4,7 +4,7 @@ import react from '@vitejs/plugin-react'
 
 export default defineConfig({
   main: {
-    plugins: [externalizeDepsPlugin()],
+    plugins: [externalizeDepsPlugin({ exclude: ['fflate'] })],
     build: {
       rollupOptions: {
         input: { index: resolve(__dirname, 'electron/main/index.ts') }
@@ -35,6 +35,7 @@ export default defineConfig({
     },
     resolve: {
       alias: {
+        '@': resolve(__dirname, 'src'),
         '@renderer': resolve(__dirname, 'src'),
         'src': resolve(__dirname, 'src')
       }

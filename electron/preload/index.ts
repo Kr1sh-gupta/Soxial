@@ -31,24 +31,33 @@ const api = {
   twitterTweet: (tweetId: string, max?: number) => ipcRenderer.invoke('cli:twitterTweet', tweetId, max),
   redditRead: (postId: string, maxComments?: number) => ipcRenderer.invoke('cli:redditRead', postId, maxComments),
 
+  prepareOnboarding: () => ipcRenderer.invoke('onboarding:prepare'),
   runOnboarding: (profileData: Record<string, any>, continueFromMessages?: any[], runId?: string) => ipcRenderer.invoke('onboarding:run', profileData, continueFromMessages, runId),
+  resumeOnboarding: (runId: string) => ipcRenderer.invoke('onboarding:resume', runId),
+  onOnboardingEvent: (cb: (event: unknown) => void) => subscribe('onboarding:event', cb),
   getOnboardingResume: () => ipcRenderer.invoke('onboarding:getResume'),
   checkpointOnboarding: (runId: string, phase: 'gather' | 'interview', messages: any[], pendingQuestion?: { batchId: string; questionIds: string[] }) =>
     ipcRenderer.invoke('onboarding:checkpoint', runId, phase, messages, pendingQuestion),
+  cancelOnboarding: (runId: string) => ipcRenderer.invoke('onboarding:cancel', runId),
+  pauseOnboarding: (runId: string) => ipcRenderer.invoke('onboarding:pause', runId),
   resetOnboarding: () => ipcRenderer.invoke('onboarding:reset'),
-  onOnboardingChunk: (cb: (text: string) => void) => subscribe('onboarding:chunk', cb),
-  onOnboardingToolCall: (cb: (data: { name: string, args: any }) => void) => subscribe('onboarding:toolCall', cb),
-  onOnboardingToolResult: (cb: (data: { name: string, result: any }) => void) => subscribe('onboarding:toolResult', cb),
-  onOnboardingReasoning: (cb: (text: string) => void) => subscribe('onboarding:reasoning', cb),
-  onOnboardingTransientRetry: (cb: (info: { attempt: number; maxAttempts: number; backoffMs: number; model: string }) => void) =>
-    subscribe('onboarding:transientRetry', cb),
-  onOnboardingQuestion: (cb: (payload: { batchId: string; questions: { id: string; text: string; type: 'single' | 'multi' | 'text'; options?: string[] }[] }) => void) =>
-    subscribe('onboarding:question', cb),
+
+  // Plan 12: strategy review + commit.
+  getStrategyDraft: (runId: string) => ipcRenderer.invoke('onboarding:getDraft', runId),
+  updateDraftSection: (runId: string, expectedVersion: number, section: string, payload: any) =>
+    ipcRenderer.invoke('onboarding:updateDraftSection', runId, expectedVersion, section, payload),
+  regenerateDraftSection: (runId: string, expectedVersion: number, section: string) =>
+    ipcRenderer.invoke('onboarding:regenerateSection', runId, expectedVersion, section),
+  commitStrategy: (runId: string, expectedVersion: number) => ipcRenderer.invoke('onboarding:commitStrategy', runId, expectedVersion),
+  discardStrategyDraft: (runId: string) => ipcRenderer.invoke('onboarding:discardDraft', runId),
+
+  getEnrichmentStatus: (runId: string) => ipcRenderer.invoke('onboarding:getEnrichmentStatus', runId),
+  retryEnrichment: (runId: string) => ipcRenderer.invoke('onboarding:retryEnrichment', runId),
+  cancelEnrichment: (runId: string) => ipcRenderer.invoke('onboarding:cancelEnrichment', runId),
+  onEnrichmentEvent: (cb: (event: unknown) => void) => subscribe('onboarding:enrichment:event', cb),
   sendOnboardingAnswer: (id: string, answers: { id: string; answer: string | string[] }[]) => ipcRenderer.send('onboarding:answer', { id, answers }),
   saveOnboardingConversation: (messages: { role: string; content: string; steps?: any[] }[]) => ipcRenderer.invoke('onboarding:saveConversation', messages),
   retryOnboardingAuth: (id: string, action: 'retry' | 'skip_twitter' | 'skip_reddit' | 'abort' | boolean) => ipcRenderer.send('onboarding:retryAuth', { id, action }),
-  onOnboardingAuthRequired: (cb: (payload: { id: string; twitter: { needed: boolean; ok: boolean; username?: string; name?: string }; reddit: { needed: boolean; ok: boolean; username?: string; name?: string }; canSkipTwitter?: boolean; canSkipReddit?: boolean; canProceedPartial?: boolean }) => void) =>
-    subscribe('onboarding:authRequired', cb),
 
   chatSend: (messages: any[], options?: { model?: string; effort?: string }, sessionId?: number) => ipcRenderer.invoke('chat:send', messages, options, sessionId),
   chatInject: (payload: any, sessionId?: number) => ipcRenderer.invoke('chat:inject', payload, sessionId),
@@ -119,6 +128,10 @@ const api = {
   addApiKey: (apiKey: string, provider?: string) => ipcRenderer.invoke('api:addApiKey', apiKey, provider),
   removeApiKey: (id: number) => ipcRenderer.invoke('api:removeApiKey', id),
   getModelExhaustionStatus: (model: string) => ipcRenderer.invoke('api:getModelExhaustionStatus', model),
+  verifyCredentials: (request: {
+    google?: { primary?: string; additional?: string[]; storedKeyIds?: number[] }
+    zhipu?: { primary?: string; additional?: string[]; storedKeyIds?: number[]; codingPlan?: boolean }
+  }) => ipcRenderer.invoke('api:verifyCredentials', request),
   detectApiTier: (force?: boolean) => ipcRenderer.invoke('api:detectTier', force),
 
   removeAllListeners: (channel: string) => ipcRenderer.removeAllListeners(channel),

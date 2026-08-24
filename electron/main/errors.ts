@@ -84,6 +84,11 @@ export function normalizeAppError(error: unknown, context: NormalizeContext = {}
     code = 'AGENT_INCOMPLETE'
     retryable = true
     action = 'resume'
+  } else if (lower.includes('missing') || lower.includes('readiness') || lower.includes('incomplete')) {
+    category = 'validation'
+    code = 'STRATEGY_INCOMPLETE'
+    retryable = true
+    action = 'retry'
   } else if (lower.includes('invalid') || lower.includes('required') || lower.includes('empty')) {
     category = 'validation'
     code = 'INVALID_REQUEST'

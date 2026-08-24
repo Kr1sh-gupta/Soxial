@@ -57,6 +57,16 @@ Do not run Node tests and Electron development/builds concurrently because both
 ABIs use the same native module path. If you see a `NODE_MODULE_VERSION`
 mismatch, run the preparation command for the operation you want to perform.
 
+`predev` and `build` run `native:electron` automatically; `preview` does not, so
+run it yourself after a test session.
+
+`native:node` rebuilds the node_modules tree that actually owns
+`better-sqlite3`, which is not always this project. When the package is hoisted
+above the repo or shared from another checkout (linked installs, monorepos, agent
+worktrees), a plain `npm rebuild` reports success while leaving the loaded binary
+untouched. If the ABI check fails, it prints the resolved binary path, the ABI it
+expected, and the ABI it found.
+
 ### Development DevTools
 
 Development builds expose the Electron renderer over Chrome DevTools Protocol at `http://127.0.0.1:9229`. CDP-capable tools and AI agents can use this endpoint to inspect and navigate the DOM or capture screenshots. The endpoint is bound to localhost and is disabled in packaged builds.

@@ -67,8 +67,10 @@ media/              # only when safe local media was selected and fits limits
 - scheduled posts
 - milestones and social content
 
-The export excludes `api_keys`, `schema_migrations`, the credential vault, and
-secret-bearing profile fields. Secret-like strings in user content are
+The export excludes `api_keys`, `schema_migrations`, `onboarding_strategy_drafts`,
+`onboarding_enrichment_jobs`, the credential vault, and secret-bearing profile
+fields. Drafts and enrichment jobs are run-local working state, not user-owned
+content; SQLite backups continue to include them. Secret-like strings in user content are
 redacted as an additional defense. Media is included only when its resolved
 path stays under the app's media directory, the individual file is at most
 25 MiB, and the total included media is at most 100 MiB. Otherwise the content
