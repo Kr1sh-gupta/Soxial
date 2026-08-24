@@ -135,6 +135,16 @@ export const migrations: Migration[] = [
       `)
     },
   },
+  {
+    version: 9,
+    name: 'add-enrichment-user-retries',
+    up: (db) => {
+      db.exec(`
+        ALTER TABLE onboarding_enrichment_jobs
+          ADD COLUMN user_retries INTEGER NOT NULL DEFAULT 0;
+      `)
+    },
+  },
 ]
 
 export function runMigrations(db: Database.Database): void {

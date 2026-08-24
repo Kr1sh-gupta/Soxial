@@ -5,8 +5,9 @@
 // "Approve and continue" runs the transactional commit.
 
 import { useCallback, useEffect, useState } from 'react'
-import { Check, ChevronDown, Loader2, Pencil, RefreshCw, X } from 'lucide-react'
+import { AlertCircle, Check, ChevronDown, Loader2, Pencil, RefreshCw, X } from 'lucide-react'
 import { Button } from '../../components/ui/button'
+import { isEnrichmentEvent } from '../../types/onboarding-events'
 
 type Draft = {
   profileStrategyFields: Record<string, string>
@@ -64,6 +65,45 @@ export function StrategyReview({
   const [showAdvanced, setShowAdvanced] = useState(false)
   const [conflict, setConflict] = useState(false)
   const [committing, setCommitting] = useState(false)
+
+  // Plan 13: background refinement runs after commit; surface its progress
+  // quietly and give the user a retry when it fails.
+  type EnrichmentUiState = 'idle' | 'running' | 'failed' | 'done'
+  const [enrichment, setEnrichment] = useState<EnrichmentUiState>('idle')
+  const [retryLimitReached, setRetryLimitReached] = useState(false)
+
+  useEffect(() => {
+    let disposed = false
+    window.api.getEnrichmentStatus(runId).then(status => {
+      if (disposed) return
+      const jobStatus = status?.job?.status
+      if (jobStatus === 'pending' || jobStatus === 'running') setEnrichment('running')
+      else if (jobStatus === 'failed') setEnrichment('failed')
+      else if (jobStatus === 'succeeded') setEnrichment('done')
+    }).catch(() => { /* status is cosmetic here */ })
+    const unsubscribe = window.api.onEnrichmentEvent(event => {
+      if (!isEnrichmentEvent(event) || event.runId !== runId) return
+      if (event.payload.type === 'stage') setEnrichment('running')
+      else if (event.payload.type === 'complete') setEnrichment('done')
+      else if (event.payload.type === 'failed') setEnrichment('failed')
+      // A cancelled job stays quiet — the user asked for it to stop.
+    })
+    return () => { disposed = true; unsubscribe() }
+  }, [runId])
+
+  const retryEnrichment = async () => {
+    setEnrichment('running')
+    try {
+      const result = await window.api.retryEnrichment(runId)
+      if (!result?.success) {
+        if (result?.code === 'RETRY_LIMIT_REACHED') setRetryLimitReached(true)
+        else onError?.(result?.error || 'The refinement retry could not start.')
+        setEnrichment('failed')
+      }
+    } catch {
+      setEnrichment('failed')
+    }
+  }
 
   const loadDraft = useCallback(async (runIdToLoad: string) => {
     try {
@@ -315,6 +355,27 @@ export function StrategyReview({
           </div>
         </div>
       </div>
+
+      {enrichment === 'running' && (
+        <div className="flex items-center gap-2 rounded-lg border border-zinc-800 bg-zinc-900/60 px-4 py-3 text-sm text-zinc-400">
+          <Loader2 className="h-3.5 w-3.5 animate-spin" /> Refining your strategy…
+        </div>
+      )}
+      {enrichment === 'failed' && (
+        <div className="flex items-center justify-between gap-3 rounded-lg border border-amber-700/50 bg-amber-950/40 px-4 py-3 text-sm text-amber-300">
+          <span className="flex items-center gap-2">
+            <AlertCircle className="h-4 w-4 shrink-0" />
+            {retryLimitReached
+              ? 'Background refinement could not finish — your approved strategy is already in use.'
+              : 'Background refinement didn’t finish. Everything you approved is saved.'}
+          </span>
+          {!retryLimitReached && (
+            <Button variant="ghost" size="sm" disabled={committing} onClick={retryEnrichment}>
+              <RefreshCw className="mr-1 h-3 w-3" /> Retry
+            </Button>
+          )}
+        </div>
+      )}
 
       <div className="flex items-center justify-end gap-2">
         <Button variant="ghost" size="sm" disabled={committing} onClick={() => onError?.('saved-later')}>

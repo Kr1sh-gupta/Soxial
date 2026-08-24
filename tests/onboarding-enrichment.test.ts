@@ -3,7 +3,9 @@ import { describe, expect, test } from 'vitest'
 import { runMigrations } from '../electron/main/db-migrations'
 import {
   advanceEnrichmentStage,
+  canManuallyRetryEnrichment,
   deriveStrategyReadiness,
+  ENRICHMENT_MAX_USER_RETRIES,
   getEnrichmentJob,
   isTransientEnrichmentFailure,
   nextEnrichmentBackoffMs,
@@ -185,5 +187,18 @@ describe('enrichment stage progression', () => {
   test('experiment-type memories report the experiments stage', () => {
     expect(advanceEnrichmentStage('queued', 'save_memory', { items: [{ type: 'experiment' }] })).toBe('experiments')
     expect(advanceEnrichmentStage('queued', 'save_memory', { items: [{ type: 'audience' }] })).toBe('memory')
+  })
+})
+
+describe('manual retry cap (Plan 13: no unbounded user retries)', () => {
+  test('allows a fresh job to be manually retried', () => {
+    expect(canManuallyRetryEnrichment({ user_retries: 0 })).toBe(true)
+    expect(canManuallyRetryEnrichment({})).toBe(true)
+  })
+
+  test('blocks once the manual retry budget is spent', () => {
+    expect(canManuallyRetryEnrichment({ user_retries: ENRICHMENT_MAX_USER_RETRIES - 1 })).toBe(true)
+    expect(canManuallyRetryEnrichment({ user_retries: ENRICHMENT_MAX_USER_RETRIES })).toBe(false)
+    expect(canManuallyRetryEnrichment({ user_retries: ENRICHMENT_MAX_USER_RETRIES + 5 })).toBe(false)
   })
 })

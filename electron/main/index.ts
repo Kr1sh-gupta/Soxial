@@ -12,7 +12,7 @@ import { detectApiTier } from './api-tier'
 import { logger } from './log'
 import { registerIpcHandlers } from './ipc/register'
 import { createRunId, errorForRenderer } from './errors'
-import { appendAnsweredInteraction, ConnectedPlatforms, createOnboardingCheckpointV2, migrateOnboardingCheckpoint } from './onboarding-run'
+import { appendAnsweredInteraction, ConnectedPlatforms, connectedPlatformsFromProfile, createOnboardingCheckpointV2, migrateOnboardingCheckpoint } from './onboarding-run'
 import { OnboardingCheckpointStore } from './onboarding-checkpoint-store'
 import { OnboardingReadinessResult, RecordedGap, artifactFromTool, describeMissingArtifacts, readinessFromCheckpoint, recordedGapsFromLedger } from './onboarding-readiness'
 import { REPAIR_MAX_STEPS, buildRepairPrompt, selectRepairTools } from './onboarding-repair'
@@ -21,8 +21,10 @@ import { OnboardingRunRegistry } from './onboarding-registry'
 import { ReviewSection, ensureDraftForRun, getDraftRow, getMergedGrowthStrategy, openDraftForReview, parseDraftDocument, restoreOutOfScopeMutations, sanitizeProfileStrategyFields, setDraftStatus, updateDraft } from './strategy-draft'
 import { commitOnboardingStrategy, shouldTakePreCommitBackup } from './strategy-commit'
 import {
+  canManuallyRetryEnrichment,
   cancelEnrichment,
   deriveStrategyReadiness,
+  ENRICHMENT_MAX_USER_RETRIES,
   getEnrichmentJob,
   prepareEnrichmentJobsForResume,
   runEnrichmentJob,
@@ -329,6 +331,8 @@ interface OnboardingInterviewOutcome {
   runId: string
   /** True when the user backed out of the auth gate; the renderer navigates away. */
   aborted?: boolean
+  /** Set when the run ended in an intentional stop — its paused/cancelled state is preserved, not failed. */
+  stopped?: 'paused' | 'cancelled'
   reviewRequired?: boolean
   error?: string
   appError?: unknown
@@ -362,10 +366,7 @@ async function runInterviewAndHandOffToReview(options: {
   const { runId, store, recordedGaps } = options
 
   const currentProf = getProfile()
-  const platforms = {
-    twitter: !!currentProf?.twitter_handle,
-    reddit: !!currentProf?.reddit_username,
-  }
+  const platforms = connectedPlatformsFromProfile(currentProf)
   store.setConnectedPlatforms(platforms)
 
   const onboardingTools = createOnboardingTools(options.sendQuestions, platforms, {
@@ -389,13 +390,24 @@ async function runInterviewAndHandOffToReview(options: {
   })
   const onboardingPrompt = getOnboardingSystemPrompt(platforms)
 
+  // A paused/cancelled run aborts its stream and resolves with no text — an
+  // intentional stop is not a failure, so its recorded state must survive.
+  const stopState = (): 'paused' | 'cancelled' | null => {
+    const active = onboardingRuns.get(runId)
+    return active?.state === 'paused' || active?.state === 'cancelled' ? active.state : null
+  }
+
   const failRun = (message: string, code: string, readiness?: OnboardingReadinessResult): OnboardingInterviewOutcome => {
+    const stopped = stopState()
     const appError = errorForRenderer(message, { runId })
     store.update(c => {
       if (c.displayMessages.length === 0) {
         c.displayMessages = [{ role: 'assistant', content: summaryText?.trim() || message }]
       }
     })
+    if (stopped) {
+      return { success: false, runId, stopped }
+    }
     store.markFailed(code)
     onboardingRuns.settle(runId, 'failed', code)
     return { success: false, error: appError.message, appError, runId, readiness }
@@ -438,13 +450,16 @@ async function runInterviewAndHandOffToReview(options: {
         c.displayMessages = [{ role: 'assistant', content: result.text }]
       }
     })
-    store.markFailed(appError.code)
-    onboardingRuns.settle(runId, 'failed', appError.code)
-    return { success: false, error: appError.message, appError, runId }
+    return failRun(result.error, appError.code)
   }
 
   logger.info('main', `onboarding complete (${result.text.length} chars)`)
   if (!result.text || result.text.trim().length === 0) {
+    const stopped = stopState()
+    if (stopped) {
+      logger.info('main', `onboarding ${runId} stopped (${stopped}) before producing output`)
+      return { success: false, runId, stopped }
+    }
     // Agent ended without producing a strategy (e.g. stream aborted mid-tool). Surface as retryable.
     logger.warn('main', 'onboarding produced empty output — returning retryable error')
     return failRun('Onboarding ended without producing a strategy. Please retry.', 'EMPTY_OUTPUT')
@@ -853,10 +868,7 @@ async function executeOnboardingRun(
       publishPhase('interview')
 
       const currentProf = getProfile()
-      const platforms = {
-        twitter: !!currentProf?.twitter_handle,
-        reddit: !!currentProf?.reddit_username,
-      }
+      const platforms = connectedPlatformsFromProfile(currentProf)
 
       const compacted = compactGatheredData(gathered)
       const snippets: string[] = [
@@ -1080,7 +1092,7 @@ function setupIpc() {
     }
 
     const currentProf = getProfile()
-    const platforms = { twitter: !!currentProf?.twitter_handle, reddit: !!currentProf?.reddit_username }
+    const platforms = connectedPlatformsFromProfile(currentProf)
     const baseTools = createTools({ platforms })
     const safeBase = filterToolsByCapability(baseTools as Record<string, any>, SAFE_CAPABILITIES)
     const scoped = createDraftScopedTools(safeBase, db, runId)
@@ -1146,7 +1158,7 @@ function setupIpc() {
   ipcMain.handle('onboarding:commitStrategy', async (_e, runId: string, expectedVersion: number) => {
     const db = getDb()
     const currentProf = getProfile()
-    const platforms = { twitter: !!currentProf?.twitter_handle, reddit: !!currentProf?.reddit_username }
+    const platforms = connectedPlatformsFromProfile(currentProf)
 
     const draftRow = getDraftRow(db, runId)
     if (draftRow && draftRow.status !== 'committed') {
@@ -1225,6 +1237,9 @@ function setupIpc() {
     if (!['failed', 'cancelled'].includes(job.status)) {
       return { success: false, error: 'The enrichment job is not in a retryable state.' }
     }
+    if (!canManuallyRetryEnrichment(job)) {
+      return { success: false, code: 'RETRY_LIMIT_REACHED', error: `Manual retry limit reached (${ENRICHMENT_MAX_USER_RETRIES}).` }
+    }
     db.prepare(`
       UPDATE onboarding_enrichment_jobs SET
         status = 'pending',
@@ -1233,6 +1248,7 @@ function setupIpc() {
         last_error_code = NULL,
         last_error_message = NULL,
         completed_at = NULL,
+        user_retries = user_retries + 1,
         updated_at = datetime('now')
       WHERE id = ?
     `).run(job.id)
@@ -1342,10 +1358,7 @@ function setupIpc() {
       const sendChatQuestion = (q: { id: string; text: string; type: 'single' | 'multi' | 'text'; options?: string[] }) =>
         mainWindow?.webContents.send('chat:question', { ...q, sessionId: sid })
       const currentProfile = getProfile()
-      const platforms = {
-        twitter: !!currentProfile?.twitter_handle,
-        reddit: !!currentProfile?.reddit_username,
-      }
+      const platforms = connectedPlatformsFromProfile(currentProfile)
       const chatTools = createChatTools(sendChatQuestion, platforms)
 
       // Determine fallback chain based on API tier

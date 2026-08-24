@@ -67,6 +67,16 @@ export interface ConnectedPlatforms {
   reddit: boolean
 }
 
+/** Derive connected-platform flags from a profile row's handle columns. */
+export function connectedPlatformsFromProfile(
+  profile:
+    | { twitter_handle?: string | null; reddit_username?: string | null }
+    | null
+    | undefined,
+): ConnectedPlatforms {
+  return { twitter: !!profile?.twitter_handle, reddit: !!profile?.reddit_username }
+}
+
 export type ToolLedgerStatus = 'calling' | 'succeeded' | 'failed'
 
 export interface ToolLedgerEntry {

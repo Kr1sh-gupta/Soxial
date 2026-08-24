@@ -32,7 +32,7 @@ interface Window {
     commitStrategy: (runId: string, expectedVersion: number) => Promise<{ success: boolean; alreadyCommitted?: boolean; error?: string; code?: string; missing?: string[] }>
     discardStrategyDraft: (runId: string) => Promise<{ success: boolean; error?: string }>
     getEnrichmentStatus: (runId: string) => Promise<{ success: boolean; runId?: string; job?: any; readiness?: string }>
-    retryEnrichment: (runId: string) => Promise<{ success: boolean; error?: string }>
+    retryEnrichment: (runId: string) => Promise<{ success: boolean; error?: string; code?: string }>
     onEnrichmentEvent: (cb: (event: unknown) => void) => () => void
     cancelEnrichment: (runId: string) => Promise<{ success: boolean }>
     sendOnboardingAnswer: (id: string, answers: { id: string; answer: string | string[] }[]) => void

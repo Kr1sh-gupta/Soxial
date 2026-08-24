@@ -5,7 +5,7 @@ import { createTools } from './tools'
 import { SAFE_CAPABILITIES, filterToolsByCapability, listDeniedTools } from './tool-capabilities'
 import { PendingInteractionRegistry } from './pending-interaction'
 import { KnownIdentity, recommendedQuestionCountFromAssessment, validateInterviewQuestions } from './interview-validation'
-import type { EvidenceAssessment } from './onboarding-run'
+import { connectedPlatformsFromProfile, type EvidenceAssessment } from './onboarding-run'
 import { createDraftScopedTools } from './draft-tools'
 
 type GapArtifact = 'baseline_metrics' | 'audience_memory'
@@ -190,10 +190,7 @@ export function getAgentConfig(options?: AgentOptions): AgentConfig {
   const effortLabel = options?.effort || 'Medium'
   const thinkingLevel = EFFORT_MAP[effortLabel] || 'medium'
 
-  const platforms = {
-    twitter: !!profile?.twitter_handle,
-    reddit: !!profile?.reddit_username,
-  }
+  const platforms = connectedPlatformsFromProfile(profile)
 
   let system = getSystemPrompt(platforms)
   const now = new Date()
@@ -1011,6 +1008,20 @@ export async function runAgent(request: RunAgentRequest): Promise<void> {
         let result: any = null
         const prevMsgCount = modelMessages.length
 
+        // Best effort on abort: hand back whatever model state exists so a
+        // paused run can resume from real messages instead of the display transcript.
+        const persistProgressOnAbort = async () => {
+          if (!result) return
+          try {
+            const progressMsgs = await result.responseMessages
+            if (progressMsgs?.length > 0) {
+              modelMessages = [...modelMessages, ...progressMsgs]
+              logger.info('agent', `preserved ${progressMsgs.length} message(s) from aborted attempt (total: ${modelMessages.length})`)
+            }
+          } catch { /* aborted stream never completed its response messages */ }
+          options?.onModelMessages?.(modelMessages)
+        }
+
         try {
           const isZhipu = currentModel.startsWith('glm')
           let modelInstance: any
@@ -1074,6 +1085,7 @@ export async function runAgent(request: RunAgentRequest): Promise<void> {
           for await (const part of result.stream) {
             if (abortController?.signal.aborted) {
               logger.info('agent', 'aborted during stream')
+              await persistProgressOnAbort()
               onDone(fullText)
               return
             }
@@ -1134,6 +1146,7 @@ export async function runAgent(request: RunAgentRequest): Promise<void> {
         } catch (e: any) {
           if (abortController?.signal.aborted) {
             logger.info('agent', 'aborted by user')
+            await persistProgressOnAbort()
             onDone(fullText)
             return
           }
@@ -1141,18 +1154,7 @@ export async function runAgent(request: RunAgentRequest): Promise<void> {
           // Capture progress (tool calls, tool results, partial responses) from the
           // failed attempt so retries, key rotations, and model fallbacks continue
           // from here instead of restarting from scratch.
-          if (result) {
-            try {
-              const progressMsgs = await result.responseMessages
-              if (progressMsgs?.length > 0) {
-                modelMessages = [...modelMessages, ...progressMsgs]
-                logger.info('agent', `preserved ${progressMsgs.length} response message(s) from failed attempt (total: ${modelMessages.length})`)
-              }
-            } catch { /* stream produced no response messages */ }
-            // Best effort: hand the partial transcript to the caller so a
-            // paused/failed run can still be resumed from real model state.
-            options?.onModelMessages?.(modelMessages)
-          }
+          await persistProgressOnAbort()
 
           // Progress was made (tool calls/text emitted before the error) → the API IS
           // working, just intermittently flaky. Reset the transient counter so only

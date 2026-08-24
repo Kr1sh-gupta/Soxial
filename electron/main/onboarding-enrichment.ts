@@ -25,12 +25,25 @@ export interface EnrichmentJobRow {
   status: EnrichmentJobStatus
   attempt: number
   max_attempts: number
+  user_retries?: number
   stage: string
   last_error_code: string | null
   last_error_message: string | null
   started_at: string | null
   updated_at: string
   completed_at: string | null
+}
+
+/**
+ * Manual (user-initiated) retries reset the attempt counter, so they need
+ * their own bound — otherwise a permanently failing job could be retried
+ * forever.
+ */
+export const ENRICHMENT_MAX_USER_RETRIES = 3
+
+/** True when the user may still manually retry this job. */
+export function canManuallyRetryEnrichment(job: Pick<EnrichmentJobRow, 'user_retries'>): boolean {
+  return (job.user_retries ?? 0) < ENRICHMENT_MAX_USER_RETRIES
 }
 
 /** Strategy readiness tiers surfaced to the UI. */
