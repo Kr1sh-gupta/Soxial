@@ -26,7 +26,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           OPENAI_KEY: ${{ secrets.ZEN_API_KEY }}
           OPENAI.API_BASE: "https://opencode.ai/zen/v1"
-          config.model: "openai/deepseek-v4-flash-free"
+          config.model: "openai/x-preview-f-free"
           config.fallback_models: '["openai/big-pickle"]'
           config.custom_model_max_tokens: "64000"
           config.custom_reasoning_model: "true"
