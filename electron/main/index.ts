@@ -3,12 +3,11 @@ import { join } from 'path'
 import { existsSync } from 'fs'
 import { config } from 'dotenv'
 config()
-import { getDb, getProfile, updateProfile, createChatSession, getChatSessions, getChatMessages, addChatMessage, updateChatSessionTitle, getChatSessionContextSummary, updateChatSessionContextSummary, deleteChatSession, getQuickActions, setQuickActions, getQuickActionsContext, getApiTier, setApiTier, getLatestResumableOnboardingRun, getOnboardingRun, quarantineOnboardingRun } from './db'
+import { getDb, getProfile, updateProfile, createChatSession, getChatSessions, getChatMessages, addChatMessage, updateChatSessionTitle, getChatSessionContextSummary, updateChatSessionContextSummary, deleteChatSession, getQuickActions, setQuickActions, getQuickActionsContext, getLatestResumableOnboardingRun, getOnboardingRun, quarantineOnboardingRun } from './db'
 import { ensureCliInstalled, ensureRdtAuth, ensureTwitterAuth } from './cli'
 import { gatherOnboardingSocialData } from './social-content'
-import { runAgent, generateText, ONBOARDING_SYSTEM_PROMPT, getOnboardingSystemPrompt, createOnboardingTools, installOnboardingAnswerListener, clearPendingQuestions, cancelPendingQuestionsForRun, createChatTools, installChatAnswerListener, clearPendingChatQuestions, ONBOARDING_MODEL_FALLBACK, CHAT_MODEL_FALLBACK_PRO, CHAT_MODEL_FALLBACK_FREE, getOnboardingFallbackChain, getTitleModel, getQuickActionModel } from './agent'
+import { runAgent, generateText, ONBOARDING_SYSTEM_PROMPT, getOnboardingSystemPrompt, createOnboardingTools, installOnboardingAnswerListener, clearPendingQuestions, cancelPendingQuestionsForRun, createChatTools, installChatAnswerListener, clearPendingChatQuestions, getOnboardingFallbackChain, getTitleModel, getQuickActionModel } from './agent'
 import { isTwitterHandleRebuildActive } from './twitter-handle-rebuild'
-import { detectApiTier } from './api-tier'
 import { logger } from './log'
 import { initPuterAuthHost } from './puter-auth'
 import { registerIpcHandlers } from './ipc/register'
@@ -34,6 +33,7 @@ import {
 import { createTools } from './tools'
 import { createDraftScopedTools } from './draft-tools'
 import { SAFE_CAPABILITIES, filterToolsByCapability } from './tool-capabilities'
+import { teardownAllSubagents } from './orchestration'
 import { ENRICHMENT_EVENT_CHANNEL, ONBOARDING_EVENT_CHANNEL } from '../../src/types/onboarding-events'
 import { createBackup, listBackups, scheduleAutomaticBackups, stopAutomaticBackups, verifyBackup } from './backup'
 
@@ -250,6 +250,9 @@ app.on('window-all-closed', () => {
   clearPendingQuestions('window-closed')
   clearPendingChatQuestions('window-closed')
   onboardingRuns.abortAll('window-closed')
+  // Delegated subagents cannot outlive their window: settle every pending
+  // promise exactly once instead of leaving runs pending on exit.
+  teardownAllSubagents('window-closed')
   if (process.platform !== 'darwin') app.quit()
 })
 
@@ -260,6 +263,7 @@ app.on('before-quit', () => {
   clearPendingQuestions('app-quit')
   clearPendingChatQuestions('app-quit')
   onboardingRuns.abortAll('app-quit')
+  teardownAllSubagents('app-quit')
 })
 
 /**
@@ -692,15 +696,6 @@ async function executeOnboardingRun(
         new Date(Date.now() + PENDING_INTERACTION_TIMEOUT_MS).toISOString(),
       )
       onboardingRuns.publish(runId, { type: 'question', batchId: payload.batchId, questions: payload.questions })
-    }
-
-    // ─── Phase 0: Detect API tier (silent background) ───────────────────────
-    try {
-      const tier = await detectApiTier()
-      logger.info('main', `detected API tier: ${tier}`)
-    } catch (err) {
-      logger.warn('main', `tier detection failed, assuming free tier: ${(err as Error).message}`)
-      setApiTier('free')
     }
 
     // ─── Phase 1: Auto-gather data (skip if continuing from previous attempt) ───────
@@ -1371,11 +1366,9 @@ function setupIpc() {
         mainWindow?.webContents.send('chat:question', { ...q, sessionId: sid })
       const currentProfile = getProfile()
       const platforms = connectedPlatformsFromProfile(currentProfile)
-      const chatTools = createChatTools(sendChatQuestion, platforms)
-
-      // Determine fallback chain based on API tier
-      const tier = getApiTier().tier
-      const fallbackChain = tier === 'pro' ? CHAT_MODEL_FALLBACK_PRO : CHAT_MODEL_FALLBACK_FREE
+      // The chat run's controller is shared with delegated subagents, so
+      // chat:stop also stops any in-flight subagent work.
+      const chatTools = createChatTools(sendChatQuestion, platforms, { abortController: run.abortController })
 
       await new Promise<void>((resolve) => {
         runAgent({
@@ -1396,7 +1389,6 @@ function setupIpc() {
           onTransientRetry: info => mainWindow?.webContents.send('chat:transientRetry', { ...info, sessionId: sid }),
           options: {
             ...options,
-            fallbackChain,
           },
           toolsOverride: chatTools,
           abortController: run.abortController,

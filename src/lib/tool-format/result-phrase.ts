@@ -150,6 +150,38 @@ export function toolResultPhrase(name: string, args: any, result: any): string {
       return isRecord(result) && result.success ? "Gap recorded" : "Failed";
     case "record_evidence_assessment":
       return isRecord(result) && result.success ? "Assessment recorded" : "Failed";
+    case "read_workflow_guide": {
+      const r = isRecord(result) ? result : {};
+      return typeof r.error === "string" ? (shortError(r.error) ?? "Failed") : "Playbook loaded";
+    }
+    case "run_subagent": {
+      const r = isRecord(result) ? result : {};
+      if (r.ok === false || typeof r.error === "string") {
+        return r.error === "cancelled" ? "Cancelled" : (shortError(r.error) ?? "Failed");
+      }
+      if (r.backgrounded) return "Running · polling";
+      const phrases: Record<string, string> = {
+        researcher: "Findings ready",
+        "reply-crafter": "Reply drafts ready",
+        "post-composer": "Post drafts ready",
+        "intel-updater": "Insights saved",
+      };
+      return (typeof r.kind === "string" && phrases[r.kind]) || "Done";
+    }
+    case "get_subagent_output": {
+      const r = isRecord(result) ? result : {};
+      if (r.ok === false) return shortError(r.error) ?? "Unknown run";
+      switch (r.status) {
+        case "completed": return "Findings ready";
+        case "running":
+        case "queued": return "Still running";
+        case "failed": return "Failed";
+        case "timeout": return "Timed out";
+        default: return r.status === "cancelled" ? "Cancelled" : String(r.status ?? "Done");
+      }
+    }
+    case "cancel_subagent":
+      return isRecord(result) && result.ok ? "Cancelled" : "Nothing to cancel";
     default:
       break;
   }

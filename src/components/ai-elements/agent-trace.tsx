@@ -15,6 +15,7 @@ import {
   CornerUpLeft,
   Crosshair,
   Database,
+  FileSearch,
   FileText,
   Flame,
   Gauge,
@@ -36,6 +37,7 @@ import {
   ShieldCheck,
   Sparkles,
   SquarePen,
+  SquareX,
   ThumbsUp,
   TrendingUp,
   UserPlus,
@@ -177,6 +179,10 @@ const TOOL_ICONS: Record<string, LucideIcon> = {
   generate_image: ImageIcon,
   schedule_post: CalendarClock,
   get_scheduled_posts: CalendarClock,
+  read_workflow_guide: BookOpen,
+  run_subagent: Users,
+  get_subagent_output: FileSearch,
+  cancel_subagent: SquareX,
   ask_user: MessageSquare,
 };
 
